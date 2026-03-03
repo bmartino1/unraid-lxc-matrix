@@ -1,0 +1,98 @@
+Matrix Stack - Component Versions & EOL Notes
+As of March 2026
+
+==================================================
+COMPONENT NOTES - watch for EOL dates
+==================================================
+
+Matrix Synapse (Python homeserver)
+  Version: Latest stable from packages.matrix.org
+  Repo: https://github.com/element-hq/synapse
+  EOL: Ongoing. Check https://matrix.org/blog/
+
+Element Web (React client)
+  Version: Latest release from GitHub releases
+  Repo: https://github.com/element-hq/element-web
+  EOL: Ongoing.
+
+Jitsi Meet
+  Components: prosody, jicofo, jitsi-videobridge2, jitsi-meet
+  Source: https://download.jitsi.org (stable channel)
+  Java: OpenJDK 17 (required for JVB and jicofo)
+    JVB/jicofo require Java 11+ (17 LTS recommended)
+    EOL Java 17: Sept 2029 (LTS)
+  prosody version: 0.12.x (Debian bookworm)
+
+Valkey (Redis fork / cache)
+  Version: 8.0.x (latest from GitHub releases)
+  Site: https://valkey.io
+  Replaces: Redis (BSL license change)
+  EOL: Ongoing open-source project
+
+PostgreSQL
+  Version: 16 (from postgresql.org APT)
+  EOL: Nov 2028
+  Docs: https://www.postgresql.org/support/versioning/
+
+coturn (TURN/STUN server)
+  Version: Debian bookworm package (4.6.x)
+  EOL: Ongoing
+
+Nginx
+  Version: Debian bookworm stable (1.22.x)
+  EOL: Debian bookworm: June 2028
+
+Certbot (Let's Encrypt)
+  Version: python3-certbot-nginx from Debian bookworm
+  Notes: Auto-renewal via cron
+
+Debian OS
+  Version: Debian 12 Bookworm
+  EOL: June 30, 2028
+  Docs: https://www.debian.org/releases/bookworm/
+
+==================================================
+WHY DEBIAN BOOKWORM (12) AND NOT BUSTER (10)?
+==================================================
+Buster (10) reached EOL August 2022.
+Bookworm (12) ships OpenJDK 17 natively (required for JVB2/jicofo).
+Jitsi's stable APT repo supports bookworm.
+Matrix Synapse packages support bookworm.
+PostgreSQL 16 APT repo supports bookworm.
+=> Bookworm is the correct base for this stack.
+
+==================================================
+NETWORK ARCHITECTURE
+==================================================
+LXC container acts as the entire stack.
+All traffic enters via Nginx on port 80/443.
+
+Port 80:  HTTP -> HTTPS redirect + ACME challenge
+Port 443: Nginx stream with ssl_preread SNI routing:
+           <domain>         -> Element Web (Nginx http, port 8443)
+           matrix.<domain>  -> Matrix Synapse (Nginx http -> :8008)
+           meet.<domain>    -> Jitsi Meet (Nginx http -> prosody/JVB)
+
+Port 3478: coturn TURN/STUN (UDP+TCP)
+Port 5349: coturn TURNS (TLS)
+Port 10000/UDP: Jitsi Video Bridge media
+
+Internal only:
+  8008  Matrix Synapse HTTP
+  8443  Nginx internal HTTPS (SNI-terminated)
+  5280  prosody BOSH/XMPP
+  5432  PostgreSQL
+  6379  Valkey
+  9090  JVB Colibri HTTP
+
+==================================================
+DNS REQUIREMENTS
+==================================================
+A  <domain>          -> LXC IP
+A  matrix.<domain>   -> LXC IP
+A  meet.<domain>     -> LXC IP
+
+SRV _matrix._tcp.<domain>  10 0 443 matrix.<domain>
+
+Optional for coturn:
+A  turn.<domain>     -> LXC IP

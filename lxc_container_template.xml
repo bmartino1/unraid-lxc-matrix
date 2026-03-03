@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LXC version="0.1">
+  <n>matrix</n>
+  <Distribution>debian</Distribution>
+  <Release>bookworm</Release>
+  <Architecture>amd64</Architecture>
+  <Repository>https://github.com/bmartino1/unraid-lxc-matrix</Repository>
+  <Description>Self-hosted Matrix Synapse + Element Web + Jitsi Meet + Nginx stack</Description>
+  <Privileged>true</Privileged>
+  <Autostart>true</Autostart>
+  <Beta>True</Beta>
+  <Support>https://forums.unraid.net</Support>
+  <Source>https://matrix.org/</Source>
+  <Project>https://element.io/</Project>
+  <Overview>
+    Full self-hosted secure communications stack in a single Debian 12 LXC:
+    Matrix Synapse homeserver, Element Web client, Jitsi Meet video conferencing,
+    Valkey cache, PostgreSQL database, coturn TURN server, and Nginx reverse proxy.
+    Run ./setup.sh --domain yourdomain.com on first boot.
+  </Overview>
+  <Category>Tools: Network:</Category>
+  <WebUI>https://[IP]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/bmartino1/unraid-lxc-matrix/main/matrix.256x256.png</Icon>
+  <DonateText>If you find this useful, buy me a coffee</DonateText>
+  <DonateLink>https://www.paypal.com/donate</DonateLink>
+  <Requires>unRAID server with LXC plugin</Requires>
+  <Config Name="Domain" Target="DOMAIN" Default="" Mode="" Description="Your public domain (e.g. example.com)" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Admin Username" Target="ADMIN_USER" Default="admin" Mode="" Description="Matrix admin account username" Type="Variable" Display="always" Required="false" Mask="false"/>
+</LXC>
