@@ -1,50 +1,18 @@
 #!/bin/bash
-# Stage 98 - Crontab, timers, and update hooks
+# =============================================================================
+# BUILD PHASE - Stage 98: Pre-stage cron and logrotate configs
+# Actual service-aware cron entries added by setup.sh after services configured
+# =============================================================================
 set -euo pipefail
 
-echo "==> Installing crontab for maintenance tasks..."
-cat > /etc/cron.d/matrix-stack <<EOF
-# Matrix Stack maintenance cron
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-# Restart coturn nightly to flush stale sessions
-0 4 * * *   root  systemctl restart coturn
-
-# Rotate Nginx logs weekly
-0 5 * * 0   root  /usr/sbin/logrotate -f /etc/logrotate.d/nginx
-
-# Check all stack services are running
-*/5 * * * *  root  /usr/local/bin/matrix-stack-healthcheck.sh
-EOF
-
-echo "==> Writing stack health-check script..."
-cat > /usr/local/bin/matrix-stack-healthcheck.sh <<'HCEOF'
-#!/bin/bash
-# Health-check for matrix-stack services
-SERVICES=(nginx matrix-synapse postgresql valkey prosody jicofo jitsi-videobridge2 coturn)
-FAILED=()
-
-for svc in "${SERVICES[@]}"; do
-  if ! systemctl is-active --quiet "$svc"; then
-    FAILED+=("$svc")
-    systemctl start "$svc" 2>/dev/null || true
-  fi
-done
-
-if [[ ${#FAILED[@]} -gt 0 ]]; then
-  echo "$(date): Restarted failed services: ${FAILED[*]}" >> /var/log/matrix-stack-health.log
-fi
-HCEOF
-chmod +x /usr/local/bin/matrix-stack-healthcheck.sh
-
-echo "==> Configuring logrotate for stack services..."
-cat > /etc/logrotate.d/matrix-stack <<EOF
+echo "==> [98] Pre-staging logrotate config..."
+cat > /etc/logrotate.d/matrix-stack <<'EOF'
 /var/log/matrix-synapse/*.log
 /var/log/valkey/*.log
-/var/log/coturn/*.log {
+/var/log/coturn/*.log
+/var/log/nginx/stream.log {
     daily
-    rotate 7
+    rotate 14
     compress
     delaycompress
     missingok
@@ -52,8 +20,32 @@ cat > /etc/logrotate.d/matrix-stack <<EOF
     sharedscripts
     postrotate
         systemctl reload matrix-synapse 2>/dev/null || true
+        systemctl reload nginx          2>/dev/null || true
     endscript
 }
 EOF
 
-echo "Completed Stage 98 - Crontab and timers"
+echo "==> [98] Pre-staging health-check script (populated at setup time)..."
+cat > /usr/local/bin/matrix-healthcheck <<'EOF'
+#!/bin/bash
+# Matrix stack health-check - populated at setup time
+# If setup.sh has not been run, this script does nothing
+if [[ ! -f /root/.matrix-stack.env ]]; then
+  exit 0
+fi
+source /root/.matrix-stack.env
+SERVICES=(nginx matrix-synapse postgresql valkey prosody jicofo jitsi-videobridge2 coturn)
+for svc in "${SERVICES[@]}"; do
+  if ! systemctl is-active --quiet "$svc" 2>/dev/null; then
+    echo "$(date): restarting $svc" >> /var/log/matrix-stack-health.log
+    systemctl start "$svc" 2>/dev/null || true
+  fi
+done
+EOF
+chmod +x /usr/local/bin/matrix-healthcheck
+
+echo "==> [98] Pre-staging cron entry (will only act after .env file exists)..."
+echo "*/5 * * * * root /usr/local/bin/matrix-healthcheck" \
+  > /etc/cron.d/matrix-stack
+
+echo "==> Completed Stage 98 - Crontab pre-staged"

@@ -2,97 +2,108 @@ Matrix Stack - Component Versions & EOL Notes
 As of March 2026
 
 ==================================================
-COMPONENT NOTES - watch for EOL dates
+COMPONENT VERSIONS
 ==================================================
 
-Matrix Synapse (Python homeserver)
-  Version: Latest stable from packages.matrix.org
-  Repo: https://github.com/element-hq/synapse
-  EOL: Ongoing. Check https://matrix.org/blog/
+Matrix Synapse
+  Source: packages.matrix.org (Debian bookworm)
+  Always grabs latest stable release
+  Docs: https://element-hq.github.io/synapse/latest/
 
-Element Web (React client)
-  Version: Latest release from GitHub releases
-  Repo: https://github.com/element-hq/element-web
-  EOL: Ongoing.
+Element Web
+  Source: GitHub releases (element-hq/element-web)
+  Build script fetches latest release tarball
+  Docs: https://github.com/element-hq/element-web
 
-Jitsi Meet
+Jitsi Meet Stack
   Components: prosody, jicofo, jitsi-videobridge2, jitsi-meet
-  Source: https://download.jitsi.org (stable channel)
-  Java: OpenJDK 17 (required for JVB and jicofo)
-    JVB/jicofo require Java 11+ (17 LTS recommended)
-    EOL Java 17: Sept 2029 (LTS)
-  prosody version: 0.12.x (Debian bookworm)
+  Source: download.jitsi.org stable APT repo
+  Java: OpenJDK 17 (required - JVB2 and jicofo need Java 11+)
+  Java 17 LTS EOL: September 2029
 
-Valkey (Redis fork / cache)
-  Version: 8.0.x (latest from GitHub releases)
-  Site: https://valkey.io
-  Replaces: Redis (BSL license change)
-  EOL: Ongoing open-source project
+Valkey (Redis-compatible cache)
+  Version: 8.0.2 (from GitHub releases)
+  Source: https://github.com/valkey-io/valkey/releases
+  Replaces Redis after BSL license change
+  EOL: Ongoing open-source
 
 PostgreSQL
-  Version: 16 (from postgresql.org APT)
-  EOL: Nov 2028
-  Docs: https://www.postgresql.org/support/versioning/
+  Version: 16 (from postgresql.org APT repo)
+  EOL: November 2028
+  Notes: Must use C locale for Matrix Synapse
 
-coturn (TURN/STUN server)
-  Version: Debian bookworm package (4.6.x)
-  EOL: Ongoing
+coturn
+  Source: Debian bookworm packages (4.6.x)
+  Docs: https://github.com/coturn/coturn
 
 Nginx
-  Version: Debian bookworm stable (1.22.x)
-  EOL: Debian bookworm: June 2028
+  Source: Debian bookworm (1.22.x)
+  Notes: Requires libnginx-mod-stream for SNI routing
 
-Certbot (Let's Encrypt)
-  Version: python3-certbot-nginx from Debian bookworm
-  Notes: Auto-renewal via cron
+Certbot
+  Source: python3-certbot-nginx from Debian repos
+  Auto-renewal: via cron every day at 3am
 
 Debian OS
   Version: Debian 12 Bookworm
   EOL: June 30, 2028
-  Docs: https://www.debian.org/releases/bookworm/
 
 ==================================================
-WHY DEBIAN BOOKWORM (12) AND NOT BUSTER (10)?
+WHY DEBIAN 12 BOOKWORM (NOT BUSTER/BULLSEYE)
 ==================================================
-Buster (10) reached EOL August 2022.
-Bookworm (12) ships OpenJDK 17 natively (required for JVB2/jicofo).
-Jitsi's stable APT repo supports bookworm.
-Matrix Synapse packages support bookworm.
-PostgreSQL 16 APT repo supports bookworm.
-=> Bookworm is the correct base for this stack.
+- Buster (10): EOL August 2022 — DO NOT USE
+- Bullseye (11): Only ships Java 11 — JVB2 works but Java 17 preferred
+- Bookworm (12): Ships Java 17 natively, all repos support it, EOL 2028
+=> Bookworm is the correct choice
 
 ==================================================
-NETWORK ARCHITECTURE
+TWO-PHASE SETUP MODEL
 ==================================================
-LXC container acts as the entire stack.
-All traffic enters via Nginx on port 80/443.
+Phase 1 (Build): createLXCarchive.sh runs on Unraid host.
+  - Installs all packages into a temp Debian 12 LXC
+  - No domain, no secrets, no config files written
+  - Services disabled/stopped
+  - setup.sh placed at /root/setup.sh inside the image
+  - Packs container as matrix.tar.xz for GitHub release
 
-Port 80:  HTTP -> HTTPS redirect + ACME challenge
-Port 443: Nginx stream with ssl_preread SNI routing:
-           <domain>         -> Element Web (Nginx http, port 8443)
-           matrix.<domain>  -> Matrix Synapse (Nginx http -> :8008)
-           meet.<domain>    -> Jitsi Meet (Nginx http -> prosody/JVB)
-
-Port 3478: coturn TURN/STUN (UDP+TCP)
-Port 5349: coturn TURNS (TLS)
-Port 10000/UDP: Jitsi Video Bridge media
-
-Internal only:
-  8008  Matrix Synapse HTTP
-  8443  Nginx internal HTTPS (SNI-terminated)
-  5280  prosody BOSH/XMPP
-  5432  PostgreSQL
-  6379  Valkey
-  9090  JVB Colibri HTTP
+Phase 2 (Setup): User runs ./setup.sh --domain chat.example.com
+  - Runs inside the LXC after first boot
+  - Writes all config files with real domain and generated secrets
+  - Starts all services
+  - Optionally gets Let's Encrypt certs
 
 ==================================================
-DNS REQUIREMENTS
+PORTS USED
 ==================================================
-A  <domain>          -> LXC IP
-A  matrix.<domain>   -> LXC IP
-A  meet.<domain>     -> LXC IP
+External (forward to LXC):
+  80/tcp   - HTTP (ACME challenge + redirect)
+  443/tcp  - HTTPS (Nginx SNI stream router)
+  3478/udp - coturn TURN/STUN
+  3478/tcp - coturn TURN/STUN (TCP)
+  5349/tcp - coturn TURNS (TLS)
+  10000/udp - Jitsi Video Bridge media
 
-SRV _matrix._tcp.<domain>  10 0 443 matrix.<domain>
+Internal (loopback only):
+  8008     - Matrix Synapse HTTP
+  8443     - Nginx internal HTTPS (SNI-terminated)
+  9000     - Synapse metrics/health
+  5280     - prosody BOSH + WebSocket
+  5347     - prosody component port (jicofo/JVB)
+  5222     - prosody c2s
+  5269     - prosody s2s
+  9090     - JVB Colibri HTTP
+  5432     - PostgreSQL
+  6379     - Valkey
+  4443     - JVB TCP media relay
 
-Optional for coturn:
-A  turn.<domain>     -> LXC IP
+==================================================
+JITSI WIDGET-ONLY SECURITY
+==================================================
+meet.<domain> is restricted by Nginx:
+- Direct browser navigation -> HTTP 403
+- Only accessible when Origin or Referer = Element domain
+- Content-Security-Policy: frame-ancestors 'self' https://<element-domain>
+- Element Web config points jitsi.preferred_domain at meet.<domain>
+
+This means video calls work within Element but Jitsi cannot be used
+as a standalone public meeting room (by design for private deployments).
