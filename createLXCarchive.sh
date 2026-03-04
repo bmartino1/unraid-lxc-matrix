@@ -1,144 +1,237 @@
 #!/bin/bash
 # =============================================================================
-# createLXCarchive.sh
-# Run this on the Unraid host (with LXC plugin) to build the release archive.
+# createLXCarchive.sh  —  Unraid LXC Builder (Debian 12 / bookworm)
 #
-# This script:
-#  1. Creates a fresh Debian 12 LXC container
-#  2. Runs build/ scripts (installs packages, stages files — NO domain/secrets)
-#  3. Copies the setup/ and scripts/ directories into the container at /root/
-#  4. Packs the container as matrix.tar.xz for GitHub release
+# Run on the Unraid host (with the LXC plugin installed).
 #
-# Users then:
-#  1. Download the template XML and add it to Unraid LXC plugin
-#  2. The plugin downloads matrix.tar.xz and creates the container
-#  3. User opens console, runs: ./setup.sh --domain chat.example.com
+# What this does:
+#   1) Creates a fresh Debian 12 LXC
+#   2) Copies ./build into container and runs build stages (NO domain/secrets)
+#   3) Copies setup.sh + setup/ + scripts/ into container (staged in /tmp/setup)
+#   4) Stops the container, cleans caches, and packs the rootfs into matrix.tar.xz
+#   5) Writes matrix.tar.xz.md5 and a combined build.log
+#
+# End user flow:
+#   - Install template in LXC plugin -> it downloads matrix.tar.xz
+#   - User opens console -> runs: /root/setup.sh (or whatever you stage)
 # =============================================================================
 
 set -euo pipefail
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Sanity checks
+# ─────────────────────────────────────────────────────────────────────────────
 if [[ ! -f /boot/config/plugins/lxc.plg ]]; then
-  echo "ERROR: LXC plugin not found on this Unraid host!"
+  echo "ERROR: Unraid LXC plugin not found (/boot/config/plugins/lxc.plg)."
   exit 1
 fi
 
-# ── Config ────────────────────────────────────────────────────────────────────
-LXC_PATH=$(grep "lxc.lxcpath" /boot/config/plugins/lxc/lxc.conf \
-           | cut -d '=' -f2 | tr -d ' ')
-LXC_PACKAGE_NAME=matrix
-LXC_PACKAGE_DIR="${LXC_PATH}/cache/build_cache_matrix"
-LXC_DISTRIBUTION=debian
-LXC_RELEASE=bookworm
-LXC_ARCH=amd64
+CONF="/boot/config/plugins/lxc/lxc.conf"
+if [[ ! -f "$CONF" ]]; then
+  echo "ERROR: LXC config not found: $CONF"
+  exit 1
+fi
+
+LXC_PATH="$(grep -E '^\s*lxc\.lxcpath\s*=' "$CONF" | head -n1 | cut -d '=' -f2- | tr -d '[:space:]')"
+if [[ -z "${LXC_PATH}" ]]; then
+  echo "ERROR: Could not read lxc.lxcpath from $CONF"
+  exit 1
+fi
+
+# Unraid /mnt/user (FUSE) is not safe for LXC rootfs/packing
+if echo "${LXC_PATH}" | grep -q "/mnt/user"; then
+  echo "ERROR: LXC path is under /mnt/user (${LXC_PATH}) — not allowed."
+  echo "Set LXC plugin path to /mnt/cache/... or /mnt/diskX/..."
+  exit 1
+fi
+
+LXC_PACKAGE_NAME="matrix"
+LXC_PACKAGE_DIR="${LXC_PATH}/cache/build_cache_${LXC_PACKAGE_NAME}"
+
+LXC_DISTRIBUTION="debian"
+LXC_RELEASE="bookworm"
+LXC_ARCH="amd64"
+
 LXC_BUILD_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-if echo "${LXC_PATH}" | grep -q "/mnt/user"; then
-  echo "ERROR: LXC path /mnt/user is not allowed!"
+# Build scripts (sorted)
+mapfile -t BUILD_FILES < <(find "${LXC_BUILD_ROOT}/build" -maxdepth 1 -type f -name '[0-9][0-9]-*.sh' -printf '%f\n' | sort)
+
+if [[ ${#BUILD_FILES[@]} -eq 0 ]]; then
+  echo "ERROR: No build scripts found in ${LXC_BUILD_ROOT}/build (expected 00-*.sh)."
   exit 1
 fi
 
-# ── Temp container name ───────────────────────────────────────────────────────
-LXC_CONT_NAME=$(openssl rand -base64 24 | tr -dc 'a-z0-9' | cut -c -12)
+# Temp container name
+LXC_CONT_NAME="$(openssl rand -base64 24 | tr -dc 'a-z0-9' | head -c 12)"
 
 mkdir -p "${LXC_PACKAGE_DIR}"
-echo "Build time: $(date +'%Y-%m-%d %H:%M')" > "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_startdate.log"
 
-# ── Create Debian 12 container ───────────────────────────────────────────────
+START_LOG="${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_startdate.log"
+CREATE_LOG="${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_create.log"
+BUILD_LOG="${LXC_PACKAGE_DIR}/build.log"
+
+echo "Build time: $(date +'%Y-%m-%d %H:%M:%S %Z')" > "${START_LOG}"
+echo "LXC path: ${LXC_PATH}" >> "${START_LOG}"
+echo "Container: ${LXC_CONT_NAME}" >> "${START_LOG}"
+echo "Repo root: ${LXC_BUILD_ROOT}" >> "${START_LOG}"
+
+cleanup_on_fail() {
+  set +e
+  echo ""
+  echo "!! Cleanup on failure..."
+  lxc-stop -k -n "${LXC_CONT_NAME}" 2>/dev/null || true
+  lxc-destroy -n "${LXC_CONT_NAME}" 2>/dev/null || true
+}
+trap cleanup_on_fail ERR
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Create container
+# ─────────────────────────────────────────────────────────────────────────────
 echo "Creating temporary container: ${LXC_CONT_NAME}"
 lxc-create --name "${LXC_CONT_NAME}" \
   --template download -- \
-  --dist  "${LXC_DISTRIBUTION}" \
+  --dist "${LXC_DISTRIBUTION}" \
   --release "${LXC_RELEASE}" \
-  --arch "${LXC_ARCH}" > "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_create.log"
+  --arch "${LXC_ARCH}" > "${CREATE_LOG}"
 
-# ── Build script list ─────────────────────────────────────────────────────────
-BUILD_FILES=$(ls -1 "${LXC_BUILD_ROOT}/build/" | grep '^[0-9][0-9]-' | sort)
+ROOTFS="${LXC_PATH}/${LXC_CONT_NAME}/rootfs"
+CONT_DIR="${LXC_PATH}/${LXC_CONT_NAME}"
 
-# ── Start container ───────────────────────────────────────────────────────────
+if [[ ! -d "${ROOTFS}" ]]; then
+  echo "ERROR: rootfs not found after create: ${ROOTFS}"
+  exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Start container
+# ─────────────────────────────────────────────────────────────────────────────
 echo "Starting temporary container..."
 lxc-start -n "${LXC_CONT_NAME}"
-echo "Waiting 10 seconds..."
-sleep 10
+sleep 8
 
-# ── Copy build scripts and setup scripts ────────────────────────────────────
-echo "Copying build directory into container..."
-cp -R "${LXC_BUILD_ROOT}/build"   "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/build"
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy scripts into container (host-side copy into rootfs)
+# ─────────────────────────────────────────────────────────────────────────────
+echo "Copying build scripts into container..."
+mkdir -p "${ROOTFS}/tmp/build"
+cp -R "${LXC_BUILD_ROOT}/build/." "${ROOTFS}/tmp/build/"
 
-# Copy the user-facing setup scripts into /tmp/setup
-# build/09-copy-setup.sh will move them to /root/
-echo "Copying setup and scripts directories into container..."
-mkdir -p "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/setup"
-cp "${LXC_BUILD_ROOT}/setup.sh"   "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/setup/"
-cp -R "${LXC_BUILD_ROOT}/setup/"  "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/setup/setup/"
-cp -R "${LXC_BUILD_ROOT}/scripts/" "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/setup/scripts/"
-chmod +x "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/setup/setup.sh"
-chmod +x "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/setup/setup/"*.sh
-chmod +x "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/setup/scripts/"*.sh
+echo "Copying setup payload into container staging area..."
+mkdir -p "${ROOTFS}/tmp/setup"
+cp -f  "${LXC_BUILD_ROOT}/setup.sh"        "${ROOTFS}/tmp/setup/setup.sh"
+cp -R  "${LXC_BUILD_ROOT}/setup"           "${ROOTFS}/tmp/setup/setup"
+cp -R  "${LXC_BUILD_ROOT}/scripts"         "${ROOTFS}/tmp/setup/scripts"
 
-# ── Execute build scripts ─────────────────────────────────────────────────────
-echo "Executing build scripts (this will take a while)..."
-IFS=$'\n'
-for script in ${BUILD_FILES}; do
+# Ensure executable bits inside rootfs
+chmod +x "${ROOTFS}/tmp/setup/setup.sh" || true
+chmod +x "${ROOTFS}/tmp/setup/setup/"*.sh 2>/dev/null || true
+chmod +x "${ROOTFS}/tmp/setup/scripts/"*.sh 2>/dev/null || true
+chmod +x "${ROOTFS}/tmp/build/"*.sh 2>/dev/null || true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Execute build scripts (logs stored in /var/log/lxc-build so /tmp cleanup won't nuke them)
+# ─────────────────────────────────────────────────────────────────────────────
+echo "Executing build scripts..."
+for script in "${BUILD_FILES[@]}"; do
   echo "----> ${script}"
-  lxc-attach -n "${LXC_CONT_NAME}" -- \
-    bash -c "chmod +x /tmp/build/${script} && /tmp/build/${script} 2>&1 | tee /tmp/${script%.*}.log"
-  EXIT_STATUS=$?
-  if [[ "${EXIT_STATUS}" != "0" ]]; then
-    echo "ERROR: ${script} failed (exit ${EXIT_STATUS}) — aborting."
-    lxc-stop -k -n "${LXC_CONT_NAME}" 2>/dev/null
-    lxc-destroy -n "${LXC_CONT_NAME}"
+  if ! lxc-attach -n "${LXC_CONT_NAME}" -- bash -lc \
+    "mkdir -p /var/log/lxc-build \
+     && chmod +x /tmp/build/${script} \
+     && /tmp/build/${script} 2>&1 | tee /var/log/lxc-build/${script%.sh}.log"
+  then
+    echo "ERROR: ${script} failed."
     exit 1
   fi
 done
 
-# ── Stop container ────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Stop container (clean shutdown)
+# ─────────────────────────────────────────────────────────────────────────────
 echo "Stopping container..."
-lxc-stop -n "${LXC_CONT_NAME}" -t 15 2>/dev/null
+lxc-stop -n "${LXC_CONT_NAME}" -t 15 2>/dev/null || lxc-stop -k -n "${LXC_CONT_NAME}" 2>/dev/null || true
 
-# ── Collect logs ──────────────────────────────────────────────────────────────
-for script in ${BUILD_FILES}; do
-  cp "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/${script%.*}.log" \
-     "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_${script%.*}.log" 2>/dev/null || true
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect logs (best-effort)
+# ─────────────────────────────────────────────────────────────────────────────
+echo "Collecting build logs..."
+LOGS_FOUND=0
+for script in "${BUILD_FILES[@]}"; do
+  src="${ROOTFS}/var/log/lxc-build/${script%.sh}.log"
+  dst="${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_${script%.sh}.log"
+  if [[ -f "$src" ]]; then
+    cp -f "$src" "$dst"
+    LOGS_FOUND=$((LOGS_FOUND+1))
+  fi
 done
+echo "   Collected ${LOGS_FOUND}/${#BUILD_FILES[@]} stage logs."
 
-# ── Cleanup container rootfs ──────────────────────────────────────────────────
-echo "Cleaning up container..."
-cd "${LXC_PATH}/${LXC_CONT_NAME}"
-find . -name ".bash_history" -exec rm -f {} \;
-rm -rf "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/tmp/"*
-rm -rf "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/var/cache/apt/archives/"*.deb
-rm -rf "${LXC_PATH}/${LXC_CONT_NAME}/rootfs/var/lib/apt/lists/"*
-sed -i '/# Container specific configuration/,$d' config
+# ─────────────────────────────────────────────────────────────────────────────
+# Cleanup rootfs for distribution (host-side edits)
+# ─────────────────────────────────────────────────────────────────────────────
+echo "Cleaning up container rootfs..."
+find "${ROOTFS}" -name ".bash_history" -exec rm -f {} \; 2>/dev/null || true
+rm -rf "${ROOTFS}/tmp/"* 2>/dev/null || true
+rm -rf "${ROOTFS}/var/cache/apt/archives/"*.deb 2>/dev/null || true
+rm -rf "${ROOTFS}/var/lib/apt/lists/"* 2>/dev/null || true
 
-# ── Assemble build.log ────────────────────────────────────────────────────────
-cat "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_startdate.log" \
-    "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_create.log" > "${LXC_PACKAGE_DIR}/build.log"
-rm  "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_startdate.log" \
-    "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_create.log"
-for script in ${BUILD_FILES}; do
-  cat  "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_${script%.*}.log" >> "${LXC_PACKAGE_DIR}/build.log"
-  rm   "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_${script%.*}.log"
-done
-echo "--------------------END--------------------" >> "${LXC_PACKAGE_DIR}/build.log"
+# Remove container-specific lines in config (safe if not present)
+if [[ -f "${CONT_DIR}/config" ]]; then
+  sed -i '/# Container specific configuration/,$d' "${CONT_DIR}/config" 2>/dev/null || true
+fi
 
-# ── Pack ──────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Assemble build.log (NEVER fail if a stage log is missing)
+# ─────────────────────────────────────────────────────────────────────────────
+echo "Assembling build.log..."
+{
+  cat "${START_LOG}" 2>/dev/null || true
+  echo ""
+  cat "${CREATE_LOG}" 2>/dev/null || true
+  echo ""
+  for script in "${BUILD_FILES[@]}"; do
+    f="${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}_${script%.sh}.log"
+    echo "==================== ${script} ===================="
+    if [[ -f "$f" ]]; then
+      cat "$f"
+      rm -f "$f" || true
+    else
+      echo "(missing log: ${script%.sh}.log)"
+    fi
+    echo ""
+  done
+  echo "--------------------END--------------------"
+} > "${BUILD_LOG}"
+
+rm -f "${START_LOG}" "${CREATE_LOG}" 2>/dev/null || true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pack archive
+# ─────────────────────────────────────────────────────────────────────────────
 echo "Packing container archive..."
-tar -cf - . | xz -9 --threads=$(nproc --all) \
-  > "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}.tar.xz"
-md5sum "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}.tar.xz" | awk '{print $1}' \
-  > "${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}.tar.xz.md5"
+cd "${CONT_DIR}"
 
-# ── Destroy temp container ────────────────────────────────────────────────────
-lxc-stop -k -n "${LXC_CONT_NAME}" 2>/dev/null
-lxc-destroy -n "${LXC_CONT_NAME}"
+ARCHIVE="${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}.tar.xz"
+ARCHIVE_MD5="${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}.tar.xz.md5"
+
+tar -cf - . | xz -9 --threads="$(nproc --all)" > "${ARCHIVE}"
+md5sum "${ARCHIVE}" | awk '{print $1}' > "${ARCHIVE_MD5}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Destroy temp container
+# ─────────────────────────────────────────────────────────────────────────────
+echo "Destroying temp container..."
+lxc-destroy -n "${LXC_CONT_NAME}" 2>/dev/null || true
+
+trap - ERR
 
 echo ""
 echo "=========================================="
 echo "  Build complete!"
 echo ""
-echo "  Archive: ${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}.tar.xz"
-echo "  MD5:     ${LXC_PACKAGE_DIR}/${LXC_PACKAGE_NAME}.tar.xz.md5"
-echo "  Log:     ${LXC_PACKAGE_DIR}/build.log"
+echo "  Archive: ${ARCHIVE}"
+echo "  MD5:     ${ARCHIVE_MD5}"
+echo "  Log:     ${BUILD_LOG}"
 echo ""
 echo "  Upload .tar.xz and .tar.xz.md5 to GitHub Release."
 echo "  Update lxc_container_template.xml with the release URL."
