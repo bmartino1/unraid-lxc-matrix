@@ -58,18 +58,56 @@ require_synapse() {
   fi
 }
 
-# ── Prompt for admin token if not set ────────────────────────────────────────
+# ── Get or create admin token ─────────────────────────────────────────────────
+# Checks: ADMIN_TOKEN in env → saved in .env file → auto-login with credentials
 get_admin_token() {
-  if [[ -z "${ADMIN_TOKEN:-}" ]]; then
-    echo ""
-    warn "No ADMIN_TOKEN found in environment."
-    echo "  Get your token: Element Web → Username → Settings → Help & About → Access Token"
-    echo "  Or run: scripts/get-admin-token.sh"
-    echo ""
-    read -rsp "  Paste admin access token: " ADMIN_TOKEN
-    echo ""
+  # 1. Already set in current environment
+  if [[ -n "${ADMIN_TOKEN:-}" ]]; then
     export ADMIN_TOKEN
+    return 0
   fi
+
+  # 2. Try auto-login using ADMIN_USER + ADMIN_PASS from .env
+  if [[ -n "${ADMIN_USER:-}" && -n "${ADMIN_PASS:-}" ]]; then
+    local LOGIN_RESP
+    LOGIN_RESP=$(curl -sf -X POST \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"type\": \"m.login.password\",
+        \"user\": \"${ADMIN_USER}\",
+        \"password\": \"${ADMIN_PASS}\",
+        \"initial_device_display_name\": \"admin-script-$(date +%s)\"
+      }" \
+      "${SYNAPSE_URL}/_matrix/client/v3/login" 2>/dev/null) || true
+
+    if [[ -n "$LOGIN_RESP" ]]; then
+      ADMIN_TOKEN=$(echo "$LOGIN_RESP" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+    fi
+
+    if [[ -n "${ADMIN_TOKEN:-}" ]]; then
+      export ADMIN_TOKEN
+      # Save token to .env for reuse within this session
+      if [[ -f /root/.matrix-stack.env ]]; then
+        if grep -q "^ADMIN_TOKEN=" /root/.matrix-stack.env; then
+          sed -i "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=${ADMIN_TOKEN}|" /root/.matrix-stack.env
+        else
+          echo "ADMIN_TOKEN=${ADMIN_TOKEN}" >> /root/.matrix-stack.env
+        fi
+      fi
+      return 0
+    fi
+  fi
+
+  # 3. Fallback: prompt user to paste a token
+  echo ""
+  warn "Could not auto-login. No ADMIN_TOKEN available."
+  echo "  Get your token: Element Web → Settings → Help & About → Access Token"
+  echo "  Or run: ./scripts/get-admin-token.sh --save"
+  echo ""
+  read -rsp "  Paste admin access token: " ADMIN_TOKEN
+  echo ""
+  export ADMIN_TOKEN
 }
 
 # ── Make authenticated API call ───────────────────────────────────────────────
