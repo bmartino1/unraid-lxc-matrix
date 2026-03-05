@@ -1,7 +1,7 @@
 #!/bin/bash
 ###############################################################################
 # SETUP PHASE 02
-# Install + configure Valkey for Matrix Synapse
+# Configure Valkey for Matrix Synapse
 ###############################################################################
 
 set -euo pipefail
@@ -13,25 +13,24 @@ echo "════════════════════════�
 echo
 
 ###############################################################################
-# Install Valkey repository if missing
+# Install Valkey if missing (fallback if build stage skipped)
 ###############################################################################
 
 if ! command -v valkey-server >/dev/null 2>&1; then
-  echo "  Adding Valkey repository..."
+  echo "  Valkey not found — installing..."
 
   apt-get update
   apt-get install -y curl gpg
 
   install -d /etc/apt/keyrings
 
-  curl -fsSL https://packages.valkey.io/debian/valkey.gpg \
+  curl -fsSL https://apt.valkey.io/gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/valkey.gpg
 
-  echo \
-  "deb [signed-by=/etc/apt/keyrings/valkey.gpg] https://packages.valkey.io/debian bookworm main" \
-    > /etc/apt/sources.list.d/valkey.list
+  cat > /etc/apt/sources.list.d/valkey.list <<EOF
+deb [signed-by=/etc/apt/keyrings/valkey.gpg] https://apt.valkey.io/debian bookworm main
+EOF
 
-  echo "  Installing Valkey..."
   apt-get update
   apt-get install -y valkey
 fi
