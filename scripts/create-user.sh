@@ -101,7 +101,7 @@ if [[ $EXIT_CODE -eq 0 ]]; then
   echo ""
   echo -e "  ${BOLD}Full MXID:${NC}  @${USERNAME}:${DOMAIN}"
   echo -e "  ${BOLD}Password:${NC}   ${PASSWORD}"
-  echo -e "  ${BOLD}Login at:${NC}   https://${ELEMENT_DOMAIN}"
+  echo -e "  ${BOLD}Login at:${NC}   https://${DOMAIN}"
 else
   error "User creation failed (exit ${EXIT_CODE})"
   error "The user may already exist. Try: scripts/list-users.sh"

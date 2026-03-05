@@ -33,7 +33,7 @@ case "$ACTION" in
       info "Create invite tokens with: ./scripts/registration-tokens.sh create"
     fi
     echo ""
-    info "Registration URL: https://${ELEMENT_DOMAIN}/#/register"
+    info "Registration URL: https://${DOMAIN}/#/register"
     ;;
 
   enable)
@@ -49,7 +49,7 @@ case "$ACTION" in
 
     systemctl reload matrix-synapse 2>/dev/null || systemctl restart matrix-synapse
     log "Open registration enabled."
-    warn "Anyone can now register at https://${ELEMENT_DOMAIN}/#/register"
+    warn "Anyone can now register at https://${DOMAIN}/#/register"
     ;;
 
   disable)

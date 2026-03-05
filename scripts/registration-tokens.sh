@@ -109,7 +109,7 @@ for t in tokens:
     log "Total: ${COUNT} token(s)"
     echo ""
     info "Share registration link:"
-    echo "  https://${ELEMENT_DOMAIN}/#/register?token=<TOKEN>"
+    echo "  https://${DOMAIN}/#/register?token=<TOKEN>"
     ;;
 
   # ── create ───────────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ for t in tokens:
     echo -e "  ${BOLD}Expires:${NC}      $([[ $EXPIRY_DAYS -eq 0 ]] && echo 'never' || echo "in ${EXPIRY_DAYS} days")"
     echo ""
     echo -e "  ${BOLD}Registration URL:${NC}"
-    echo "  https://${ELEMENT_DOMAIN}/#/register?token=${TOKEN}"
+    echo "  https://${DOMAIN}/#/register?token=${TOKEN}"
     echo ""
     info "Share the URL above with users you want to invite."
     ;;

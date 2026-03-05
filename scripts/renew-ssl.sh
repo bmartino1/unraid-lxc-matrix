@@ -4,13 +4,13 @@
 # Safe to run multiple times.
 set -euo pipefail
 
-if [[ ! -f /root/.matrix-stack.env ]]; then
-  echo "ERROR: /root/.matrix-stack.env not found. Run setup.sh first."
+if [[ ! -f /root/matrix.env ]]; then
+  echo "ERROR: /root/matrix.env not found. Run setup.sh first."
   exit 1
 fi
 
-set -a; source /root/.matrix-stack.env; set +a
+set -a; source /root/matrix.env; set +a
 export SETUP_DIR="${SETUP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
-echo "Re-running SSL provisioning for: ${DOMAIN}, ${MATRIX_DOMAIN}, ${JITSI_DOMAIN}"
+echo "Re-running SSL provisioning for: ${DOMAIN}, ${DOMAIN}, ${MEET}"
 bash "${SETUP_DIR}/setup/08-ssl.sh"

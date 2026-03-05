@@ -14,7 +14,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 require_root
 
 # Source env if setup has been run (don't fail if not)
-[[ -f /root/.matrix-stack.env ]] && { set -a; source /root/.matrix-stack.env; set +a; }
+[[ -f /root/matrix.env ]] && { set -a; source /root/matrix.env; set +a; }
 
 DOMAIN="${DOMAIN:-<not configured>}"
 

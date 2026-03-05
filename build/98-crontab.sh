@@ -30,10 +30,10 @@ cat > /usr/local/bin/matrix-healthcheck <<'EOF'
 #!/bin/bash
 # Matrix stack health-check - populated at setup time
 # If setup.sh has not been run, this script does nothing
-if [[ ! -f /root/.matrix-stack.env ]]; then
+if [[ ! -f /root/matrix.env ]]; then
   exit 0
 fi
-source /root/.matrix-stack.env
+source /root/matrix.env
 SERVICES=(nginx matrix-synapse postgresql valkey prosody jicofo jitsi-videobridge2 coturn)
 for svc in "${SERVICES[@]}"; do
   if ! systemctl is-active --quiet "$svc" 2>/dev/null; then

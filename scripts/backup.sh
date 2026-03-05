@@ -42,7 +42,7 @@ echo ""
 
 # ── Environment / secrets ────────────────────────────────────────────────────
 info "Backing up environment file..."
-cp /root/.matrix-stack.env "${BACKUP_DIR}/matrix-stack.env"
+cp /root/matrix.env "${BACKUP_DIR}/matrix-stack.env"
 chmod 600 "${BACKUP_DIR}/matrix-stack.env"
 log "Environment saved"
 

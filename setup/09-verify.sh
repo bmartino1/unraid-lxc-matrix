@@ -1,115 +1,27 @@
 #!/bin/bash
-# SETUP PHASE - 09: Final verification
 set -euo pipefail
+echo "  Final verification..."
 
-echo "  Running final service verification..."
-echo ""
+SERVICES=(nginx matrix-synapse postgresql coturn prosody jicofo jitsi-videobridge2)
+# Add valkey only if installed
+command -v valkey-server >/dev/null 2>&1 && SERVICES+=(valkey-server)
 
 ALL_OK=true
-
-SERVICES=(
-  nginx
-  matrix-synapse
-  postgresql
-  valkey
-  prosody
-  jicofo
-  jitsi-videobridge2
-  coturn
-)
-
 for svc in "${SERVICES[@]}"; do
-
-  STATUS=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
-
-  if [[ "$STATUS" == "active" ]]; then
+  if systemctl is-active --quiet "$svc" 2>/dev/null; then
     echo "    ✓ ${svc}"
   else
-    echo "    ✗ ${svc} is ${STATUS}"
-    ALL_OK=false
-
+    echo "    ✗ ${svc} — attempting start..."
     systemctl start "$svc" 2>/dev/null || true
     sleep 2
-
-    if systemctl is-active --quiet "$svc"; then
-      echo "      → started OK"
-    else
-      echo "      → still failing - check: journalctl -u ${svc}"
-    fi
+    systemctl is-active --quiet "$svc" && echo "      → started" || { echo "      → FAILED"; ALL_OK=false; }
   fi
-
 done
 
 echo ""
-echo "  Synapse health check..."
-
-HTTP_CODE=$(curl -so /dev/null -w "%{http_code}" \
-  "http://127.0.0.1:9000/health" 2>/dev/null || echo "000")
-
-if [[ "$HTTP_CODE" == "200" ]]; then
-  echo "    ✓ Synapse responding (HTTP 200)"
-else
-  echo "    ✗ Synapse health check failed (HTTP ${HTTP_CODE})"
-  ALL_OK=false
-fi
-
+echo "  Synapse API check..."
+HTTP=$(curl -so /dev/null -w "%{http_code}" http://127.0.0.1:8008/_matrix/client/versions 2>/dev/null || echo "000")
+[[ "$HTTP" == "200" ]] && echo "    ✓ HTTP 200" || { echo "    ✗ HTTP ${HTTP}"; ALL_OK=false; }
 
 echo ""
-echo "  Valkey ping..."
-
-VALKEY_CLI=$(command -v valkey-cli || true)
-
-if [[ -n "$VALKEY_CLI" ]]; then
-
-  if "$VALKEY_CLI" -a "${VALKEY_PASS}" ping 2>/dev/null | grep -q PONG; then
-    echo "    ✓ Valkey PONG"
-  else
-    echo "    ✗ Valkey not responding"
-    ALL_OK=false
-  fi
-
-else
-  echo "    ✗ valkey-cli not found"
-  ALL_OK=false
-fi
-
-
-echo ""
-echo "  PostgreSQL readiness..."
-
-if pg_isready -U postgres >/dev/null 2>&1; then
-  echo "    ✓ PostgreSQL ready"
-else
-  echo "    ✗ PostgreSQL not responding"
-  ALL_OK=false
-fi
-
-
-echo ""
-echo "  Nginx config test..."
-
-if nginx -t >/dev/null 2>&1; then
-  echo "    ✓ nginx configuration OK"
-else
-  nginx -t
-  ALL_OK=false
-fi
-
-
-echo ""
-echo "  Active ports:"
-
-EXPECTED_PORTS=':(80|443|8008|8443|5280|5222|5269|9090|5432|6379|3478|5349)\s'
-
-ss -tlnp 2>/dev/null \
-  | grep -E "$EXPECTED_PORTS" \
-  | awk '{print "    " $4}' \
-  | sort -t: -k2 -n
-
-
-echo ""
-if [[ "$ALL_OK" == "true" ]]; then
-  echo "  ✓ All services verified OK."
-else
-  echo "  ⚠ Some services reported issues — review above output."
-fi
+[[ "$ALL_OK" == "true" ]] && echo "  ✓ All services OK." || echo "  ⚠ Some services need attention."

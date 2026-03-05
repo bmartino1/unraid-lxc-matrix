@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! -f /root/.matrix-stack.env ]]; then
+if [[ ! -f /root/matrix.env ]]; then
   warn "Setup has not been completed. Run: ./setup.sh --domain yourdomain.com"
   exit 0
 fi
@@ -176,7 +176,7 @@ echo -e "  Log dir:      ${SYNAPSE_LOG_SIZE}"
 
 # ── SSL Certificates ──────────────────────────────────────────────────────────
 header "SSL Certificates"
-for fqdn in "${DOMAIN}" "${MATRIX_DOMAIN}" "${JITSI_DOMAIN}"; do
+for fqdn in "${DOMAIN}" "${DOMAIN}" "${MEET}"; do
   EXPIRY_STR=$(cert_expiry "$fqdn")
   if echo "$EXPIRY_STR" | grep -q "⚠\|NOT FOUND"; then
     echo -e "  ${RED}✗${NC} ${fqdn}: ${RED}${EXPIRY_STR}${NC}"
@@ -187,9 +187,9 @@ done
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 header "Endpoints"
-echo -e "  Element Web:  ${CYAN}https://${ELEMENT_DOMAIN}${NC}"
-echo -e "  Matrix API:   ${CYAN}https://${MATRIX_DOMAIN}${NC}"
-echo -e "  Jitsi Meet:   ${CYAN}https://${JITSI_DOMAIN}${NC}  (widget-only)"
+echo -e "  Element Web:  ${CYAN}https://${DOMAIN}${NC}"
+echo -e "  Matrix API:   ${CYAN}https://${DOMAIN}${NC}"
+echo -e "  Jitsi Meet:   ${CYAN}https://${MEET}${NC}  (widget-only)"
 
 # ── Port bindings ─────────────────────────────────────────────────────────────
 header "Listening Ports"
@@ -206,7 +206,7 @@ header "Listening Ports"
 header "DNS Check (against LXC IP: ${LXC_IP})"
 # Use an external resolver to avoid /etc/hosts entries (meet.* -> 127.0.0.1)
 DNS_SERVER="1.1.1.1"
-for fqdn in "${DOMAIN}" "${MATRIX_DOMAIN}" "${JITSI_DOMAIN}"; do
+for fqdn in "${DOMAIN}" "${DOMAIN}" "${MEET}"; do
   RESOLVED=$(dig +short "$fqdn" @${DNS_SERVER} 2>/dev/null | head -1 || echo "?")
   if [[ "$RESOLVED" == "$LXC_IP" ]]; then
     echo -e "  ${GREEN}✓${NC} ${fqdn} → ${RESOLVED}"

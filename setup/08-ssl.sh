@@ -1,99 +1,61 @@
 #!/bin/bash
 ###############################################################################
-# SETUP PHASE - 08: SSL/TLS certificate provisioning (non-fatal)
-# - If --skip-ssl: do nothing (self-signed stays)
-# - If certbot fails: warn and continue (NEVER breaks setup)
+# SSL/TLS provisioning — non-fatal (never breaks setup)
 ###############################################################################
-
 set -euo pipefail
-
-echo
-echo "══════════════════════════════════════════════════"
-echo "  ssl"
-echo "══════════════════════════════════════════════════"
-echo
+echo "  SSL/TLS setup..."
 
 SSL_DIR="/etc/ssl/nginx"
-CERT_BASE="/etc/letsencrypt/live"
-
+LE_BASE="/etc/letsencrypt/live"
 STAGING_FLAG=""
 [[ "${STAGING:-false}" == "true" ]] && STAGING_FLAG="--staging"
 
-mkdir -p "${SSL_DIR}"
-
-link_le_cert() {
-  local fqdn="$1"
-  if [[ -f "${CERT_BASE}/${fqdn}/fullchain.pem" && -f "${CERT_BASE}/${fqdn}/privkey.pem" ]]; then
-    ln -sf "${CERT_BASE}/${fqdn}/fullchain.pem" "${SSL_DIR}/${fqdn}.crt"
-    ln -sf "${CERT_BASE}/${fqdn}/privkey.pem"   "${SSL_DIR}/${fqdn}.key"
-    echo "  Linked Let's Encrypt cert for ${fqdn}"
-    return 0
-  fi
-  return 1
-}
-
-# Always non-fatal exit path
-finish_ok() {
-  echo
-  echo "  SSL step finished (non-fatal)."
-  exit 0
-}
-
 if [[ "${SKIP_SSL:-false}" == "true" ]]; then
-  echo "  --skip-ssl enabled: self-signed certificates remain active."
-  echo "  When you want Let's Encrypt later, run: ./scripts/renew-ssl.sh"
-  finish_ok
+  echo "  --skip-ssl: self-signed certs remain. Run scripts/renew-ssl.sh later."
+  exit 0
 fi
 
-echo "  Requesting Let's Encrypt certificates..."
-echo "  DNS must resolve to: ${LXC_IP}"
-echo
+echo "  Requesting Let's Encrypt certificates (DNS must resolve to ${LXC_IP})..."
 
-# certbot is best-effort; never let it kill setup
-for fqdn in "${DOMAIN}" "${MATRIX_DOMAIN}" "${JITSI_DOMAIN}"; do
-  echo "  Requesting cert for: ${fqdn}"
+# Use single cert for all domains (SAN cert)
+if certbot certonly --nginx --non-interactive --agree-tos \
+    --email "admin@${DOMAIN}" \
+    -d "${DOMAIN}" -d "${MEET}" -d "${TURN}" \
+    ${STAGING_FLAG} 2>&1; then
 
-  if certbot certonly \
-      --webroot \
-      --webroot-path /var/www/html \
-      --non-interactive \
-      --agree-tos \
-      --email "admin@${DOMAIN}" \
-      --domain "${fqdn}" \
-      ${STAGING_FLAG}; then
-    link_le_cert "${fqdn}" || true
-  else
-    echo "  WARNING: certbot failed for ${fqdn}"
-    echo "  Self-signed certificate remains active."
-  fi
+  echo "  Certificates obtained. Linking..."
 
-  echo
-done
+  # Update nginx to use LE certs
+  for conf in /etc/nginx/sites-available/matrix /etc/nginx/sites-available/meet; do
+    [[ -f "$conf" ]] && \
+      sed -i "s|ssl_certificate .*|ssl_certificate     ${LE_BASE}/${DOMAIN}/fullchain.pem;|" "$conf" && \
+      sed -i "s|ssl_certificate_key .*|ssl_certificate_key ${LE_BASE}/${DOMAIN}/privkey.pem;|" "$conf"
+  done
 
-# Update coturn TLS if DOMAIN cert exists (best-effort)
-if [[ -f "${CERT_BASE}/${DOMAIN}/fullchain.pem" && -f "${CERT_BASE}/${DOMAIN}/privkey.pem" ]]; then
-  echo "  Enabling TLS on coturn (best-effort)..."
-  sed -i "s|^#\s*cert=.*|cert=${CERT_BASE}/${DOMAIN}/fullchain.pem|" /etc/turnserver.conf 2>/dev/null || true
-  sed -i "s|^#\s*pkey=.*|pkey=${CERT_BASE}/${DOMAIN}/privkey.pem|"   /etc/turnserver.conf 2>/dev/null || true
+  # Update coturn
+  sed -i "s|^# cert=.*|cert=${LE_BASE}/${DOMAIN}/fullchain.pem|" /etc/turnserver.conf 2>/dev/null || true
+  sed -i "s|^cert=.*|cert=${LE_BASE}/${DOMAIN}/fullchain.pem|" /etc/turnserver.conf 2>/dev/null || true
+  sed -i "s|^# pkey=.*|pkey=${LE_BASE}/${DOMAIN}/privkey.pem|" /etc/turnserver.conf 2>/dev/null || true
+  sed -i "s|^pkey=.*|pkey=${LE_BASE}/${DOMAIN}/privkey.pem|" /etc/turnserver.conf 2>/dev/null || true
+
+  # Fix coturn cert permissions
+  bash /etc/letsencrypt/renewal-hooks/post/coturn-perms.sh 2>/dev/null || true
+
+  # Copy certs for Jitsi/Prosody
+  cp "${LE_BASE}/${DOMAIN}/fullchain.pem" "/etc/prosody/certs/${MEET}.crt" 2>/dev/null || true
+  cp "${LE_BASE}/${DOMAIN}/privkey.pem"   "/etc/prosody/certs/${MEET}.key" 2>/dev/null || true
+  chown prosody:prosody /etc/prosody/certs/${MEET}.* 2>/dev/null || true
+
+  cp "${LE_BASE}/${DOMAIN}/fullchain.pem" "/etc/jitsi/meet/${MEET}.crt" 2>/dev/null || true
+  cp "${LE_BASE}/${DOMAIN}/privkey.pem"   "/etc/jitsi/meet/${MEET}.key" 2>/dev/null || true
+
+  # Restart services
+  nginx -t && systemctl reload nginx
   systemctl restart coturn 2>/dev/null || true
+  systemctl restart prosody 2>/dev/null || true
+
+  echo "  SSL certificates installed."
+else
+  echo "  WARNING: certbot failed. Self-signed certs remain active."
+  echo "  Run scripts/renew-ssl.sh when DNS is ready."
 fi
-
-echo "  Reloading Nginx with certificates (best-effort)..."
-nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
-
-# Renewal hook (only useful if certbot succeeds later)
-mkdir -p /etc/letsencrypt/renewal-hooks/deploy
-cat > /etc/letsencrypt/renewal-hooks/deploy/matrix-stack-reload.sh <<'EOF'
-#!/bin/bash
-SSL_DIR=/etc/ssl/nginx
-for fqdn in $(ls /etc/letsencrypt/live/ 2>/dev/null); do
-  [[ -f /etc/letsencrypt/live/${fqdn}/fullchain.pem ]] || continue
-  ln -sf /etc/letsencrypt/live/${fqdn}/fullchain.pem ${SSL_DIR}/${fqdn}.crt
-  ln -sf /etc/letsencrypt/live/${fqdn}/privkey.pem   ${SSL_DIR}/${fqdn}.key
-done
-systemctl reload nginx 2>/dev/null || true
-systemctl restart coturn 2>/dev/null || true
-EOF
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/matrix-stack-reload.sh 2>/dev/null || true
-
-finish_ok

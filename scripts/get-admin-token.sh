@@ -2,7 +2,7 @@
 # =============================================================================
 # scripts/get-admin-token.sh
 # Log in as the Matrix admin and retrieve an access token.
-# Token is saved to /root/.matrix-stack.env by default.
+# Token is saved to /root/matrix.env by default.
 #
 # Usage:
 #   ./scripts/get-admin-token.sh            # login + save token
@@ -66,12 +66,12 @@ echo ""
 
 if [[ "$SAVE" == "true" ]]; then
   # Update or append ADMIN_TOKEN in the env file
-  if grep -q "^ADMIN_TOKEN=" /root/.matrix-stack.env; then
-    sed -i "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=${ACCESS_TOKEN}|" /root/.matrix-stack.env
+  if grep -q "^ADMIN_TOKEN=" /root/matrix.env; then
+    sed -i "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=${ACCESS_TOKEN}|" /root/matrix.env
   else
-    echo "ADMIN_TOKEN=${ACCESS_TOKEN}" >> /root/.matrix-stack.env
+    echo "ADMIN_TOKEN=${ACCESS_TOKEN}" >> /root/matrix.env
   fi
-  log "Token saved to /root/.matrix-stack.env"
+  log "Token saved to /root/matrix.env"
 else
   info "Token NOT saved (--no-save). To save, run without --no-save."
 fi

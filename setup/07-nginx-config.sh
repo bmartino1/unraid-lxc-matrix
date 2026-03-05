@@ -1,277 +1,264 @@
 #!/bin/bash
-# =============================================================================
-# SETUP PHASE 07
-# Configure Nginx virtual hosts and TLS SNI routing
+###############################################################################
+# Configure Nginx — matches PVE stream mux + vhost architecture
 #
-# Security model:
-#   - meet.<domain> cannot be opened directly in browser
-#   - Jitsi only loads via Element iframe
-#   - referer/origin checks enforce widget-only usage
-#   - only ports 80 and 443 exposed externally
+# Stream block muxes port 443:
+#   turn.DOMAIN → coturn :5349 (TLS passthrough)
+#   everything else → internal :60443 (nginx http termination)
 #
-# This step:
-#   - ensures nginx directories exist
-#   - generates temporary self-signed certificates
-#   - writes vhost configs
-#   - enables nginx sites
-# =============================================================================
-
+# HTTP block on :60443:
+#   DOMAIN → Element Web + Synapse (path routing)
+#   meet.DOMAIN → Jitsi Meet (referer-restricted)
+###############################################################################
 set -euo pipefail
+echo "  Configuring Nginx..."
 
-SITES_AVAIL="/etc/nginx/sites-available"
-SITES_EN="/etc/nginx/sites-enabled"
+mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/ssl/nginx
+rm -f /etc/nginx/sites-enabled/*
+
+# ── Self-signed placeholder certs ──────────────────────────────────────────
 SSL_DIR="/etc/ssl/nginx"
-
-mkdir -p "${SITES_AVAIL}" "${SITES_EN}" "${SSL_DIR}"
-rm -f "${SITES_EN}"/*
-
-echo "  Ensuring nginx installed..."
-if ! command -v nginx >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y nginx openssl
-fi
-
-# ─────────────────────────────────────────────────────────
-# Generate placeholder TLS certificates
-# These are replaced by step 08 when LE is requested
-# ─────────────────────────────────────────────────────────
-
-echo "  Generating self-signed placeholder certificates..."
-
-for fqdn in "${DOMAIN}" "${MATRIX_DOMAIN}" "${JITSI_DOMAIN}"; do
-
-    crt="${SSL_DIR}/${fqdn}.crt"
-    key="${SSL_DIR}/${fqdn}.key"
-
-    if [[ ! -f "${crt}" || ! -f "${key}" ]]; then
-
-        openssl req -x509 -nodes -newkey rsa:4096 \
-            -days 3650 \
-            -keyout "${key}" \
-            -out "${crt}" \
-            -subj "/CN=${fqdn}/O=matrix-stack/C=US" \
-            -addext "subjectAltName=DNS:${fqdn}" \
-            2>/dev/null
-
-        chmod 600 "${key}"
-
-        echo "    Self-signed cert created for ${fqdn}"
-
-    else
-        echo "    Existing cert found for ${fqdn}"
-    fi
+for fqdn in "${DOMAIN}" "${MEET}"; do
+  if [[ ! -f "${SSL_DIR}/${fqdn}.crt" ]]; then
+    openssl req -x509 -nodes -newkey rsa:4096 -days 3650 \
+      -keyout "${SSL_DIR}/${fqdn}.key" -out "${SSL_DIR}/${fqdn}.crt" \
+      -subj "/CN=${fqdn}" 2>/dev/null
+    chmod 600 "${SSL_DIR}/${fqdn}.key"
+  fi
 done
 
+# Use LE certs if available, else self-signed
+CERT="${SSL_DIR}/${DOMAIN}.crt"
+KEY="${SSL_DIR}/${DOMAIN}.key"
+LE_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+LE_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+[[ -f "$LE_CERT" ]] && CERT="$LE_CERT" && KEY="$LE_KEY"
 
-# ─────────────────────────────────────────────────────────
-# Stream SNI map used by nginx stream proxy
-# ─────────────────────────────────────────────────────────
+# ── nginx.conf with stream block (matching PVE) ───────────────────────────
+cat > /etc/nginx/nginx.conf <<NGEOF
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+error_log /var/log/nginx/error.log;
+include /etc/nginx/modules-enabled/*.conf;
 
-echo "  Writing Nginx SNI stream map..."
+events { worker_connections 1024; }
 
-cat > /etc/nginx/stream-sni.map <<EOF
-# SNI routing map
-${DOMAIN}         https_terminator;
-${MATRIX_DOMAIN}  https_terminator;
-${JITSI_DOMAIN}   https_terminator;
-EOF
-
-
-# ─────────────────────────────────────────────────────────
-# HTTP redirect + ACME support
-# ─────────────────────────────────────────────────────────
-
-cat > "${SITES_AVAIL}/00-redirect.conf" <<EOF
-server {
-
-    listen 80 default_server;
-    listen [::]:80 default_server;
-
-    server_name _;
-
-    root /var/www/html;
-
-    location /.well-known/acme-challenge/ {
-        try_files \$uri =404;
-    }
-
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
+http {
+    sendfile on;
+    tcp_nopush on;
+    types_hash_max_size 2048;
+    server_tokens off;
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    access_log /var/log/nginx/access.log;
+    gzip on;
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
 }
-EOF
 
+# Stream mux: SNI-route port 443
+# turn.DOMAIN → coturn TLS :5349 (passthrough)
+# everything else → nginx http :60443 (terminate)
+include /etc/nginx/stream.conf;
+NGEOF
 
-# ─────────────────────────────────────────────────────────
-# Element Web
-# ─────────────────────────────────────────────────────────
-
-cat > "${SITES_AVAIL}/10-element.conf" <<EOF
-server {
-
-    listen 8443 ssl http2;
-    listen [::]:8443 ssl http2;
-
-    server_name ${ELEMENT_DOMAIN};
-
-    ssl_certificate     ${SSL_DIR}/${DOMAIN}.crt;
-    ssl_certificate_key ${SSL_DIR}/${DOMAIN}.key;
-
-    root /var/www/element;
-    index index.html;
-
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header X-Content-Type-Options nosniff always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-
-    add_header Content-Security-Policy "frame-src 'self' https://${JITSI_DOMAIN}; frame-ancestors 'self'; object-src 'none'" always;
-
-    location / {
-        try_files \$uri \$uri/ /index.html;
-        add_header Cache-Control "no-cache, no-store, must-revalidate";
+# ── stream.conf ────────────────────────────────────────────────────────────
+cat > /etc/nginx/stream.conf <<STEOF
+stream {
+    map \$ssl_preread_server_name \$stream_backend {
+        ${TURN}    turn_backend;
+        default    https_backend;
     }
 
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
+    upstream https_backend {
+        server 127.0.0.1:60443;
     }
 
-    location /.well-known/matrix/server {
-        default_type application/json;
-        add_header Access-Control-Allow-Origin *;
-        return 200 '{"m.server":"${MATRIX_DOMAIN}:443"}';
+    upstream turn_backend {
+        server 127.0.0.1:5349;
     }
 
-    location /.well-known/matrix/client {
-        default_type application/json;
-        add_header Access-Control-Allow-Origin *;
-        return 200 '{"m.homeserver":{"base_url":"https://${MATRIX_DOMAIN}"},"m.identity_server":{"base_url":"https://vector.im"}}';
+    server {
+        listen 443;
+        proxy_pass \$stream_backend;
+        ssl_preread on;
     }
 
+    # Note: JVB binds directly to 10000/udp for media.
+    # If you forward port 10000/udp to this LXC, JVB handles it natively.
+    # No nginx stream proxy needed (and it would conflict with JVB).
 }
-EOF
+STEOF
 
-
-# ─────────────────────────────────────────────────────────
-# Matrix Synapse reverse proxy
-# ─────────────────────────────────────────────────────────
-
-cat > "${SITES_AVAIL}/20-synapse.conf" <<EOF
+# ── Main vhost: DOMAIN → Element Web + Synapse ────────────────────────────
+cat > /etc/nginx/sites-available/matrix <<MEOF
 server {
+    listen 127.0.0.1:60443 ssl http2;
+    server_name ${DOMAIN};
 
-    listen 8443 ssl http2;
-    listen [::]:8443 ssl http2;
+    ssl_certificate     ${CERT};
+    ssl_certificate_key ${KEY};
 
-    server_name ${MATRIX_DOMAIN};
-
-    ssl_certificate     ${SSL_DIR}/${MATRIX_DOMAIN}.crt;
-    ssl_certificate_key ${SSL_DIR}/${MATRIX_DOMAIN}.key;
-
-    client_max_body_size 100m;
-
-    proxy_read_timeout 600s;
-    proxy_send_timeout 600s;
-
-    add_header Strict-Transport-Security "max-age=63072000" always;
-    add_header Access-Control-Allow-Origin "*" always;
-
-    location / {
-
+    # Matrix Synapse
+    location /_matrix {
         proxy_pass http://127.0.0.1:8008;
-
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto https;
         proxy_set_header Host \$host;
-
-        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP \$remote_addr;
+        client_max_body_size 100m;
     }
 
+    location /_synapse/client {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+
+    # .well-known is served by Synapse (serve_server_wellknown: true)
+
+    # Element Web (catch-all — must be LAST)
+    location / {
+        root /var/www/element;
+        index index.html;
+        try_files \$uri \$uri/ /index.html;
+    }
 }
-EOF
 
-
-# ─────────────────────────────────────────────────────────
-# Jitsi Meet (restricted access)
-# ─────────────────────────────────────────────────────────
-
-cat > "${SITES_AVAIL}/30-jitsi.conf" <<EOF
 server {
+    listen 80;
+    server_name ${DOMAIN};
+    return 301 https://\$host\$request_uri;
+}
+MEOF
 
-    listen 8443 ssl http2;
-    listen [::]:8443 ssl http2;
+# Use /usr/share/element-web if Element is installed via apt
+ELEMENT_ROOT="/var/www/element"
+[[ -d "/usr/share/element-web" ]] && \
+  sed -i "s|root /var/www/element|root /usr/share/element-web|" /etc/nginx/sites-available/matrix
 
-    server_name ${JITSI_DOMAIN};
+# ── Jitsi vhost: meet.DOMAIN ──────────────────────────────────────────────
+JITSI_ROOT="/usr/share/jitsi-meet"
+JITSI_CONFIG="/etc/jitsi/meet/${MEET}-config.js"
 
-    ssl_certificate     ${SSL_DIR}/${JITSI_DOMAIN}.crt;
-    ssl_certificate_key ${SSL_DIR}/${JITSI_DOMAIN}.key;
+cat > /etc/nginx/sites-available/meet <<JTEOF
+upstream prosody {
+    zone upstreams 64K;
+    server 127.0.0.1:5280;
+    keepalive 2;
+}
+upstream jvb1 {
+    zone upstreams 64K;
+    server 127.0.0.1:9090;
+    keepalive 2;
+}
+map \$arg_vnode \$prosody_node {
+    default prosody;
+}
+map \$http_referer \$allowed_referer {
+    default                     0;
+    "~*${DOMAIN//./\\.}"        1;
+}
+server {
+    listen 127.0.0.1:60443 ssl http2;
+    server_name ${MEET};
+    ssl_certificate     ${CERT};
+    ssl_certificate_key ${KEY};
 
-    root /usr/share/jitsi-meet;
+    set \$prefix "";
+    set \$custom_index "";
+    set \$config_js_location ${JITSI_CONFIG};
+
+    root ${JITSI_ROOT};
+    ssi on;
+    ssi_types application/x-javascript application/javascript;
     index index.html;
 
-    add_header Content-Security-Policy "frame-ancestors 'self' https://${ELEMENT_DOMAIN}" always;
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/x-icon application/octet-stream application/wasm;
+    gzip_vary on;
 
-    set \$allow_jitsi 0;
-
-    if (\$request_uri ~* "^/(http-bind|xmpp-websocket|colibri-ws|libs/|css/|static/|images/|fonts/|sounds/|config\.js|external_api\.js)") {
-        set \$allow_jitsi 1;
+    location = / {
+        if (\$allowed_referer = 0) { return 403; }
+        try_files \$uri @root_path;
     }
-
-    if (\$http_origin = "https://${ELEMENT_DOMAIN}") {
-        set \$allow_jitsi 1;
+    location ~ ^/[A-Za-z0-9]+\$ {
+        if (\$allowed_referer = 0) { return 403; }
+        try_files \$uri @root_path;
     }
-
-    if (\$http_referer ~* "^https://${ELEMENT_DOMAIN}/") {
-        set \$allow_jitsi 1;
+    location = /config.js { alias \$config_js_location; }
+    location = /external_api.js { alias ${JITSI_ROOT}/libs/external_api.min.js; }
+    location ~ ^/(libs|css|static|images|fonts|lang|sounds|.well-known)/(.*)\$ {
+        add_header 'Access-Control-Allow-Origin' '*';
+        alias ${JITSI_ROOT}/\$1/\$2;
     }
-
-    if (\$allow_jitsi = 0) {
-        return 403;
-    }
-
-    location / {
-        try_files \$uri \$uri/ @root_path;
-    }
-
-    location @root_path {
-        rewrite ^/(.*)$ / break;
-    }
-
     location = /http-bind {
-        proxy_pass http://127.0.0.1:5280/http-bind;
+        proxy_pass http://\$prosody_node/http-bind?prefix=\$prefix&\$args;
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header Host \$http_host;
+        proxy_set_header Connection "";
     }
-
     location = /xmpp-websocket {
-        proxy_pass http://127.0.0.1:5280/xmpp-websocket;
+        proxy_pass http://\$prosody_node/xmpp-websocket?prefix=\$prefix&\$args;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        tcp_nodelay on;
     }
-
+    location ~ ^/colibri-ws/default-id/(.*) {
+        proxy_pass http://jvb1/colibri-ws/default-id/\$1\$is_args\$args;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        tcp_nodelay on;
+    }
+    location @root_path { rewrite ^/(.*)\$ /\$custom_index break; }
+    location ~ ^/([^/?&:'"]+)/xmpp-websocket {
+        set \$subdomain "\$1."; set \$subdir "\$1/"; set \$prefix "\$1";
+        rewrite ^/(.*)\$ /xmpp-websocket;
+    }
+    location ~ ^/([^/?&:'"]+)/http-bind {
+        set \$subdomain "\$1."; set \$subdir "\$1/"; set \$prefix "\$1";
+        rewrite ^/(.*)\$ /http-bind;
+    }
+    location ~ ^/([^/?&:'"]+)/(.*)\$ {
+        set \$subdomain "\$1."; set \$subdir "\$1/";
+        rewrite ^/([^/?&:'"]+)/(.*)\$ /\$2;
+    }
 }
-EOF
+server {
+    listen 80;
+    server_name ${MEET};
+    return 301 https://\$host\$request_uri;
+}
+JTEOF
 
-
-# ─────────────────────────────────────────────────────────
 # Enable sites
-# ─────────────────────────────────────────────────────────
+ln -sf /etc/nginx/sites-available/matrix /etc/nginx/sites-enabled/matrix
+ln -sf /etc/nginx/sites-available/meet   /etc/nginx/sites-enabled/meet
 
-echo "  Enabling Nginx sites..."
+# Ensure stream module is loaded
+mkdir -p /etc/nginx/modules-enabled
+[[ -f /usr/share/nginx/modules-available/mod-stream.conf ]] && \
+  ln -sf /usr/share/nginx/modules-available/mod-stream.conf /etc/nginx/modules-enabled/50-mod-stream.conf 2>/dev/null || true
+# Also try the standard path
+[[ -f /usr/lib/nginx/modules/ngx_stream_module.so ]] && \
+  echo "load_module /usr/lib/nginx/modules/ngx_stream_module.so;" > /etc/nginx/modules-enabled/50-mod-stream.conf 2>/dev/null || true
 
-for site in 00-redirect 10-element 20-synapse 30-jitsi; do
-    ln -sf "${SITES_AVAIL}/${site}.conf" "${SITES_EN}/${site}.conf"
-done
-
-
-# ─────────────────────────────────────────────────────────
-# Start nginx
-# ─────────────────────────────────────────────────────────
-
-echo "  Testing Nginx configuration..."
-nginx -t
-
-echo "  Starting Nginx..."
+nginx -t || { echo "ERROR: nginx config test failed"; nginx -t; exit 1; }
 systemctl enable nginx
 systemctl restart nginx
 
-echo "  Nginx configured. Jitsi should be restricted to Element widget access only."
+# Now that nginx is up, restart Jitsi services that depend on it
+echo "  Restarting Jitsi services (need nginx for websockets)..."
+systemctl restart jicofo 2>/dev/null || true
+systemctl restart jitsi-videobridge2 2>/dev/null || true
+
+echo "  Nginx configured with stream mux."

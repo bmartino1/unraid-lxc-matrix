@@ -61,9 +61,9 @@ Matrix Stack LXC - Setup Instructions
 
 STEP 1: Create DNS records pointing to this LXC IP
   A  yourdomain.com           -> <LXC IP>
-  A  matrix.yourdomain.com    -> <LXC IP>
+  A  yourdomain.com    -> <LXC IP>
   A  meet.yourdomain.com      -> <LXC IP>
-  SRV _matrix._tcp.yourdomain.com  10 0 443  matrix.yourdomain.com
+  SRV _matrix._tcp.yourdomain.com  10 0 443  yourdomain.com
 
 STEP 2: Run setup in the LXC console
   cd /root
@@ -74,7 +74,7 @@ STEP 2: Run setup in the LXC console
 
 STEP 3: After setup completes, access your stack
   Element Web:  https://yourdomain.com
-  Matrix API:   https://matrix.yourdomain.com
+  Matrix API:   https://yourdomain.com
   Jitsi:        Only via Element widget (by design - not public)
 
 STEP 4: Ongoing admin
@@ -84,7 +84,7 @@ STEP 4: Ongoing admin
   ./scripts/registration-tokens.sh create  <- invite tokens
   ./scripts/backup.sh             <- backup all data
 
-All credentials saved to: /root/.matrix-stack.env (chmod 600)
+All credentials saved to: /root/matrix.env (chmod 600)
 
 Admin scripts available in /root/scripts/:
   admin.sh                Interactive admin menu

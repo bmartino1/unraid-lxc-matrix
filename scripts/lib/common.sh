@@ -16,7 +16,7 @@ header() { echo -e "\n${CYAN}${BOLD}══ $* ══${NC}"; }
 
 # ── Load environment ──────────────────────────────────────────────────────────
 load_env() {
-  local ENV_FILE="${1:-/root/.matrix-stack.env}"
+  local ENV_FILE="${1:-/root/matrix.env}"
   if [[ ! -f "$ENV_FILE" ]]; then
     error "Environment file not found: $ENV_FILE"
     error "Run setup.sh --domain yourdomain.com first."
@@ -88,11 +88,11 @@ get_admin_token() {
     if [[ -n "${ADMIN_TOKEN:-}" ]]; then
       export ADMIN_TOKEN
       # Save token to .env for reuse within this session
-      if [[ -f /root/.matrix-stack.env ]]; then
-        if grep -q "^ADMIN_TOKEN=" /root/.matrix-stack.env; then
-          sed -i "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=${ADMIN_TOKEN}|" /root/.matrix-stack.env
+      if [[ -f /root/matrix.env ]]; then
+        if grep -q "^ADMIN_TOKEN=" /root/matrix.env; then
+          sed -i "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=${ADMIN_TOKEN}|" /root/matrix.env
         else
-          echo "ADMIN_TOKEN=${ADMIN_TOKEN}" >> /root/.matrix-stack.env
+          echo "ADMIN_TOKEN=${ADMIN_TOKEN}" >> /root/matrix.env
         fi
       fi
       return 0

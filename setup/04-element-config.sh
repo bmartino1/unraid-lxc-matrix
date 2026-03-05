@@ -1,43 +1,45 @@
 #!/bin/bash
-# SETUP PHASE - 04: Write Element Web config.json
 set -euo pipefail
+echo "  Configuring Element Web..."
 
+# Element Web can be at /var/www/element (build download) or /usr/share/element-web (apt)
 ELEMENT_DIR="/var/www/element"
+[[ -d "/usr/share/element-web" ]] && ELEMENT_DIR="/usr/share/element-web"
 
-echo "  Writing Element Web config.json..."
-cat > "${ELEMENT_DIR}/config.json" <<EOF
+cat > "${ELEMENT_DIR}/config.json" <<ECONF
 {
   "default_server_config": {
     "m.homeserver": {
-      "base_url": "https://${MATRIX_DOMAIN}",
+      "base_url": "https://${DOMAIN}",
       "server_name": "${DOMAIN}"
-    },
-    "m.identity_server": {
-      "base_url": "https://vector.im"
     }
   },
-  "brand": "Element",
-  "integrations_ui_url": "https://scalar.vector.im/",
-  "integrations_rest_url": "https://scalar.vector.im/api",
-  "integrations_widgets_urls": [
-    "https://scalar.vector.im/_matrix/integrations/v1",
-    "https://scalar.vector.im/api"
-  ],
-  "show_labs_settings": false,
-  "features": {},
+  "disable_custom_urls": true,
+  "disable_guests": true,
+  "brand": "Matrix Chat",
   "default_theme": "dark",
   "room_directory": {
     "servers": ["${DOMAIN}"]
   },
-  "enable_presence_by_hs_url": {
-    "https://${MATRIX_DOMAIN}": true
-  },
+  "show_labs_settings": false,
+  "default_country_code": "US",
   "jitsi": {
-    "preferred_domain": "${JITSI_DOMAIN}"
+    "preferred_domain": "${MEET}"
   },
-  "map_style_url": "https://api.maptiler.com/maps/streets/style.json?key=fU3vleas53NIPBBmaNfB"
+  "jitsi_widget": {
+    "skip_built_in_welcome_screen": true
+  },
+  "features": {
+    "feature_video_rooms": false,
+    "feature_group_calls": false,
+    "feature_element_call_video_rooms": false
+  },
+  "setting_defaults": {
+    "breadcrumbs": true
+  },
+  "map_style_url": null
 }
-EOF
+ECONF
 
-chown www-data:www-data "${ELEMENT_DIR}/config.json"
-echo "  Element Web configured for https://${MATRIX_DOMAIN}"
+chown www-data:www-data "${ELEMENT_DIR}/config.json" 2>/dev/null || true
+echo "  Element Web configured."
