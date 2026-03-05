@@ -25,7 +25,7 @@
   </Overview>
   <Category>Tools: Network:</Category>
   <WebUI>https://[IP]/</WebUI>
-  <Icon>https://raw.githubusercontent.com/bmartino1/unraid-lxc-matrix/main/matrix.256x256.png</Icon>
+  <Icon>https://cdn.jsdelivr.net/gh/selfhst/icons/png/matrix.png</Icon>
   <TemplateURL>https://raw.githubusercontent.com/bmartino1/unraid-lxc-matrix/main/lxc_container_template.xml</TemplateURL>
   <DownloadURL>https://github.com/bmartino1/unraid-lxc-matrix/releases/download/Production/matrix.tar.xz</DownloadURL>
   <MD5URL>https://github.com/bmartino1/unraid-lxc-matrix/releases/download/Production/matrix.tar.xz.md5</MD5URL>
