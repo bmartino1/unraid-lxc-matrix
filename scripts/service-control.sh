@@ -13,7 +13,7 @@
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/common.sh"
+source "${SCRIPT_DIR}/lib/common.sh"
 
 require_root
 
@@ -108,16 +108,16 @@ case "$ACTION" in
       SVC=$(resolve_service "$TARGET")
       systemctl status "$SVC" --no-pager
     else
-      echo -e "  ${'SERVICE':<30} STATUS"
+      printf "  %-30s %s\n" "SERVICE" "STATUS"
       echo "  $(printf '%0.s─' {1..50})"
       for svc in "${SERVICES[@]}"; do
         STATUS=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
         SINCE=$(systemctl show "$svc" --no-pager -p ActiveEnterTimestampMonotonic \
           2>/dev/null | cut -d= -f2 || echo "")
         if [[ "$STATUS" == "active" ]]; then
-          echo -e "  ${GREEN}●${NC} ${svc:<28} ${GREEN}${STATUS}${NC}"
+          printf "  ${GREEN}●${NC} %-28s ${GREEN}%s${NC}\n" "$svc" "$STATUS"
         else
-          echo -e "  ${RED}●${NC} ${svc:<28} ${RED}${STATUS}${NC}"
+          printf "  ${RED}●${NC} %-28s ${RED}%s${NC}\n" "$svc" "$STATUS"
         fi
       done
     fi

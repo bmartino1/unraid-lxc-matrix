@@ -14,7 +14,7 @@
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/common.sh"
+source "${SCRIPT_DIR}/lib/common.sh"
 
 require_root
 load_env
@@ -77,7 +77,10 @@ case "$SUBCOMMAND" in
 import sys, json, datetime
 d = json.load(sys.stdin)
 tokens = d.get('registration_tokens', [])
-print(f'  {'TOKEN':<30} {'USES':<15} {'EXPIRY':<22} STATUS')
+hdr_token = 'TOKEN'
+hdr_uses = 'USES'
+hdr_expiry = 'EXPIRY'
+print(f'  {hdr_token:<30} {hdr_uses:<15} {hdr_expiry:<22} STATUS')
 print('  ' + '-'*80)
 for t in tokens:
     tok      = t.get('token', '')

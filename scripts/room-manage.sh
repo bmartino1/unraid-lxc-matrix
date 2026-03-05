@@ -13,7 +13,7 @@
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/common.sh"
+source "${SCRIPT_DIR}/lib/common.sh"
 
 require_root
 load_env
@@ -70,7 +70,11 @@ import sys, json
 d = json.load(sys.stdin)
 rooms = d.get('rooms', [])
 total = d.get('total_rooms', len(rooms))
-print(f'  {'ROOM ID':<35} {'NAME':<35} {'MEMBERS':>7} {'LOCAL':>6}')
+hdr_rid = 'ROOM ID'
+hdr_name = 'NAME'
+hdr_mem = 'MEMBERS'
+hdr_loc = 'LOCAL'
+print(f'  {hdr_rid:<35} {hdr_name:<35} {hdr_mem:>7} {hdr_loc:>6}')
 print('  ' + '-'*85)
 for r in rooms:
     rid     = r.get('room_id','')

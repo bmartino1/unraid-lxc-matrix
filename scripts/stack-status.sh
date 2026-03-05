@@ -12,7 +12,7 @@
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/common.sh"
+source "${SCRIPT_DIR}/lib/common.sh"
 
 require_root
 
@@ -42,15 +42,29 @@ for svc in "${SERVICES[@]}"; do
   SVC_STATUS[$svc]=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
 done
 
-# Synapse health HTTP
+# Synapse health HTTP — try metrics port first, fall back to main port
 SYNAPSE_HEALTH_CODE=$(curl -so /dev/null -w "%{http_code}" \
   "http://127.0.0.1:9000/health" 2>/dev/null || echo "000")
+if [[ "$SYNAPSE_HEALTH_CODE" == "000" ]]; then
+  SYNAPSE_HEALTH_CODE=$(curl -so /dev/null -w "%{http_code}" \
+    "http://127.0.0.1:8008/_matrix/client/versions" 2>/dev/null || echo "000")
+fi
 
 # Valkey ping
-VALKEY_PING=$(/usr/local/bin/valkey-cli -a "${VALKEY_PASS}" ping 2>/dev/null || echo "ERROR")
+VALKEY_PING=$(/usr/local/bin/valkey-cli --no-auth-warning -a "${VALKEY_PASS}" ping 2>/dev/null)
+# Fallback if --no-auth-warning not supported
+if [[ -z "$VALKEY_PING" ]]; then
+  VALKEY_PING=$(/usr/local/bin/valkey-cli -a "${VALKEY_PASS}" ping 2>/dev/null || echo "ERROR")
+fi
+# Strip any warning text, keep only PONG
+VALKEY_PING=$(echo "$VALKEY_PING" | grep -oE '^PONG$' || echo "ERROR")
 
 # PostgreSQL
-PG_READY=$(pg_isready -U postgres 2>/dev/null && echo "ready" || echo "not ready")
+if pg_isready -U postgres >/dev/null 2>&1; then
+  PG_READY="ready"
+else
+  PG_READY="not ready"
+fi
 
 # DB size
 DB_SIZE=$(sudo -u postgres psql -t -c \
@@ -179,17 +193,21 @@ echo -e "  Jitsi Meet:   ${CYAN}https://${JITSI_DOMAIN}${NC}  (widget-only)"
 
 # ── Port bindings ─────────────────────────────────────────────────────────────
 header "Listening Ports"
-ss -tlnp 2>/dev/null \
-  | grep -E ':(80|443|8008|8443|5280|5222|5347|5432|6379|3478)\s' \
-  | awk '{print "  " $4}' | sort -t: -k2 -n \
-  | while read -r line; do
-      echo -e "  ${BLUE}→${NC} ${line##  }"
+{
+  ss -tlnp 2>/dev/null | awk 'NR>1 {print "tcp", $4}'
+  ss -ulnp 2>/dev/null | awk 'NR>1 {print "udp", $4}'
+} | grep -E ':(80|443|3478|5349|8008|8443|5280|5222|5269|5347|5432|6379|9000|9090|10000|4443)$' \
+  | sort -u \
+  | while read -r proto addr; do
+      echo -e "  ${BLUE}→${NC} ${addr}  (${proto})"
     done
 
 # ── DNS check ─────────────────────────────────────────────────────────────────
 header "DNS Check (against LXC IP: ${LXC_IP})"
+# Use an external resolver to avoid /etc/hosts entries (meet.* -> 127.0.0.1)
+DNS_SERVER="1.1.1.1"
 for fqdn in "${DOMAIN}" "${MATRIX_DOMAIN}" "${JITSI_DOMAIN}"; do
-  RESOLVED=$(dig +short "$fqdn" 2>/dev/null | head -1 || echo "?")
+  RESOLVED=$(dig +short "$fqdn" @${DNS_SERVER} 2>/dev/null | head -1 || echo "?")
   if [[ "$RESOLVED" == "$LXC_IP" ]]; then
     echo -e "  ${GREEN}✓${NC} ${fqdn} → ${RESOLVED}"
   elif [[ -z "$RESOLVED" || "$RESOLVED" == "?" ]]; then

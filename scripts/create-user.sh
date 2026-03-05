@@ -11,7 +11,7 @@
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/common.sh"
+source "${SCRIPT_DIR}/lib/common.sh"
 
 require_root
 load_env
@@ -75,7 +75,17 @@ info "Creating user @${USERNAME}:${DOMAIN}..."
 ADMIN_FLAG=""
 [[ "$IS_ADMIN" == true ]] && ADMIN_FLAG="-a"
 
-register_new_matrix_user \
+# Find register_new_matrix_user — may be in venv or system PATH
+REGISTER_CMD="register_new_matrix_user"
+if [[ -x "/opt/venvs/matrix-synapse/bin/register_new_matrix_user" ]]; then
+  REGISTER_CMD="/opt/venvs/matrix-synapse/bin/register_new_matrix_user"
+elif ! command -v register_new_matrix_user >/dev/null 2>&1; then
+  error "register_new_matrix_user not found in PATH or /opt/venvs/matrix-synapse/bin/"
+  error "Try: /opt/venvs/matrix-synapse/bin/register_new_matrix_user"
+  exit 1
+fi
+
+$REGISTER_CMD \
   -c /etc/matrix-synapse/homeserver.yaml \
   -u "${USERNAME}" \
   -p "${PASSWORD}" \
