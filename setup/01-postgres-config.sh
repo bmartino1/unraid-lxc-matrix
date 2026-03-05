@@ -28,8 +28,8 @@ END
 
 SELECT 'CREATE DATABASE synapse
   ENCODING UTF8
-  LC_COLLATE C
-  LC_CTYPE C
+  LC_COLLATE 'C.utf8'
+  LC_CTYPE 'C.utf8'
   TEMPLATE template0
   OWNER synapse'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'synapse')\gexec
