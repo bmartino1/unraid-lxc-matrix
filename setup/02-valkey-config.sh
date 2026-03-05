@@ -1,9 +1,8 @@
 #!/bin/bash
 ###############################################################################
 # SETUP PHASE 02
-# Configure Valkey for Matrix Synapse
+# Add Debian bookworm-backports repo + install Valkey + configure + start
 ###############################################################################
-
 set -euo pipefail
 
 echo
@@ -12,48 +11,37 @@ echo "  valkey-config"
 echo "══════════════════════════════════════════════════"
 echo
 
+BACKPORTS_LIST="/etc/apt/sources.list.d/bookworm-backports.list"
+
 ###############################################################################
-# Install Valkey if missing (fallback if build stage skipped)
+# Ensure bookworm-backports repo exists
 ###############################################################################
-
-if ! command -v valkey-server >/dev/null 2>&1; then
-  echo "  Valkey not found — installing..."
-
-  apt-get update
-  apt-get install -y curl gpg
-
-  install -d /etc/apt/keyrings
-
-  curl -fsSL https://apt.valkey.io/gpg.key \
-    | gpg --dearmor -o /etc/apt/keyrings/valkey.gpg
-
-  cat > /etc/apt/sources.list.d/valkey.list <<EOF
-deb [signed-by=/etc/apt/keyrings/valkey.gpg] https://apt.valkey.io/debian bookworm main
+if ! grep -RqsE '^[[:space:]]*deb[[:space:]].*bookworm-backports' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; then
+  echo "  Adding Debian bookworm-backports repository..."
+  cat > "${BACKPORTS_LIST}" <<'EOF'
+deb http://deb.debian.org/debian bookworm-backports main
 EOF
-
-  apt-get update
-  apt-get install -y valkey
 fi
+
+###############################################################################
+# Install Valkey from backports (repo install, no third-party keys)
+###############################################################################
+echo "  Installing Valkey (bookworm-backports)..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y -t bookworm-backports valkey-server valkey-tools
 
 ###############################################################################
 # Ensure directories exist
 ###############################################################################
-
 echo "  Preparing directories..."
-
-mkdir -p /etc/valkey
-mkdir -p /var/lib/valkey
-mkdir -p /var/log/valkey
-
-chown -R valkey:valkey /var/lib/valkey
-chown -R valkey:valkey /var/log/valkey
+mkdir -p /etc/valkey /var/lib/valkey /var/log/valkey
+chown -R valkey:valkey /var/lib/valkey /var/log/valkey 2>/dev/null || true
 
 ###############################################################################
 # Write configuration
 ###############################################################################
-
 echo "  Writing Valkey configuration..."
-
 cat > /etc/valkey/valkey.conf <<EOF
 bind 127.0.0.1
 port 6379
@@ -80,32 +68,29 @@ tcp-keepalive 300
 EOF
 
 chmod 640 /etc/valkey/valkey.conf
-chown valkey:valkey /etc/valkey/valkey.conf
+chown valkey:valkey /etc/valkey/valkey.conf 2>/dev/null || true
 
 ###############################################################################
-# Start Valkey
+# Start service (Debian package service name is valkey-server)
 ###############################################################################
-
 echo "  Starting Valkey..."
-
-systemctl enable valkey
-systemctl restart valkey
+systemctl daemon-reload
+systemctl enable valkey-server
+systemctl restart valkey-server
 
 sleep 2
 
 ###############################################################################
 # Verify service
 ###############################################################################
-
 echo "  Testing Valkey connection..."
-
-if valkey-cli -a "${VALKEY_PASS}" ping | grep -q PONG; then
+if valkey-cli -a "${VALKEY_PASS}" ping 2>/dev/null | grep -q PONG; then
   echo "  Valkey is running and responding."
 else
   echo
   echo "  WARNING: Valkey did not respond to PING"
   echo "  Check logs:"
-  echo "  journalctl -u valkey"
+  echo "  journalctl -u valkey-server --no-pager -n 200"
 fi
 
 echo
