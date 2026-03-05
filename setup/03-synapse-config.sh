@@ -189,19 +189,6 @@ else
   journalctl -u matrix-synapse --no-pager -n 50
 fi
 
-###############################################################################
-# Create admin user
-###############################################################################
-
-echo "  Creating admin user..."
-
-register_new_matrix_user \
-  -c "${SYNAPSE_CONF_DIR}/homeserver.yaml" \
-  -u "${ADMIN_USER}" \
-  -p "${ADMIN_PASS}" \
-  -a http://127.0.0.1:8008 \
-  2>/dev/null || echo "  Admin user may already exist."
-
 echo
 echo "[✓] 03-synapse-config.sh complete"
 echo
