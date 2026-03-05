@@ -2,22 +2,34 @@
 # =============================================================================
 # scripts/get-admin-token.sh
 # Log in as the Matrix admin and retrieve an access token.
-# Token is printed to stdout and optionally saved to /root/.matrix-stack.env
+# Token is saved to /root/.matrix-stack.env by default.
 #
 # Usage:
-#   ./scripts/get-admin-token.sh
-#   ./scripts/get-admin-token.sh --save   # save token to .env file
+#   ./scripts/get-admin-token.sh            # login + save token
+#   ./scripts/get-admin-token.sh --no-save  # login + print only (don't save)
+#   ./scripts/get-admin-token.sh --save     # (same as default, explicit)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
+# Parse flags before any require_ calls
+SAVE=true
+for arg in "$@"; do
+  case "$arg" in
+    --no-save)  SAVE=false ;;
+    --save)     SAVE=true  ;;
+    --help|-h)
+      echo "Usage: $0 [--save|--no-save]"
+      echo "  --save      Save token to .env file (default)"
+      echo "  --no-save   Print token only, don't save"
+      exit 0 ;;
+  esac
+done
+
 require_root
 load_env
 require_synapse
-
-SAVE=false
-[[ "${1:-}" == "--save" ]] && SAVE=true
 
 header "Matrix Admin Token"
 echo ""
@@ -59,13 +71,13 @@ if [[ "$SAVE" == "true" ]]; then
   else
     echo "ADMIN_TOKEN=${ACCESS_TOKEN}" >> /root/.matrix-stack.env
   fi
-  log "Token saved to /root/.matrix-stack.env as ADMIN_TOKEN"
-  warn "Token expires when you log out or the session is invalidated."
+  log "Token saved to /root/.matrix-stack.env"
+else
+  info "Token NOT saved (--no-save). To save, run without --no-save."
 fi
 
 echo ""
-info "To use this token in other scripts, either:"
-echo "  1. Run with --save and re-source the env file"
-echo "  2. Export manually: export ADMIN_TOKEN=${ACCESS_TOKEN}"
-echo "  3. Pass inline:    ADMIN_TOKEN=${ACCESS_TOKEN} ./scripts/list-users.sh"
+info "Other scripts will auto-login using your admin credentials."
+info "You can also pass a token manually:"
+echo "  ADMIN_TOKEN=${ACCESS_TOKEN} ./scripts/list-users.sh"
 echo ""
