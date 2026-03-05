@@ -29,8 +29,8 @@ apt-get update
 
 apt-get install -y \
   matrix-synapse-py3 \
-  python3-signedjson \
   python3-psycopg2 \
+  python3-signedjson \
   curl
 
 ###############################################################################
@@ -160,31 +160,17 @@ chown matrix-synapse:matrix-synapse "${SYNAPSE_CONF_DIR}/homeserver.yaml"
 chmod 640 "${SYNAPSE_CONF_DIR}/homeserver.yaml"
 
 ###############################################################################
-# Initialize database
-###############################################################################
-
-echo "  Initializing Synapse database..."
-
-sudo -u matrix-synapse matrix-synapse \
-  --config-path "${SYNAPSE_CONF_DIR}/homeserver.yaml" \
-  --report-stats=no \
-  --daemonize
-
-sleep 5
-
-pkill -f matrix-synapse || true
-
-###############################################################################
-# Start service
+# Start Synapse service
 ###############################################################################
 
 echo "  Starting Matrix Synapse..."
 
+systemctl daemon-reload
 systemctl enable matrix-synapse
 systemctl restart matrix-synapse
 
 ###############################################################################
-# Health check
+# Wait for Synapse
 ###############################################################################
 
 echo "  Waiting for Synapse..."
