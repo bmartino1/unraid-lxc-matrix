@@ -1,27 +1,126 @@
 #!/bin/bash
-# SETUP PHASE - 03: Configure Matrix Synapse homeserver
+###############################################################################
+# SETUP PHASE 03
+# Install + Configure Matrix Synapse (Debian/Matrix.org repo) and start service
+###############################################################################
 set -euo pipefail
+
+echo
+echo "══════════════════════════════════════════════════"
+echo "  synapse-config"
+echo "══════════════════════════════════════════════════"
+echo
 
 SYNAPSE_CONF_DIR="/etc/matrix-synapse"
 SYNAPSE_DATA_DIR="/var/lib/matrix-synapse"
 SYNAPSE_LOG_DIR="/var/log/matrix-synapse"
 
+SIGNING_KEY="${SYNAPSE_DATA_DIR}/${DOMAIN}.signing.key"
+
+###############################################################################
+# Pre-flight: required vars
+###############################################################################
+: "${DOMAIN:?missing DOMAIN}"
+: "${MATRIX_DOMAIN:?missing MATRIX_DOMAIN}"
+: "${POSTGRES_PASS:?missing POSTGRES_PASS}"
+: "${VALKEY_PASS:?missing VALKEY_PASS}"
+: "${MATRIX_SHARED_SECRET:?missing MATRIX_SHARED_SECRET}"
+: "${TURN_SECRET:?missing TURN_SECRET}"
+: "${ADMIN_USER:?missing ADMIN_USER}"
+: "${ADMIN_PASS:?missing ADMIN_PASS}"
+: "${SETUP_DATE:=$(date -Iseconds)}"
+
+###############################################################################
+# Ensure Synapse is installed (repo install)
+###############################################################################
+echo "  Ensuring Matrix Synapse packages are installed..."
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+
+# These package names cover Debian + Matrix.org repo installs.
+# If your build phase already installed them, this is a no-op.
+apt-get install -y \
+  matrix-synapse \
+  matrix-synapse-py3 \
+  python3-signedjson \
+  python3-psycopg2 \
+  curl \
+  jq
+
+###############################################################################
+# Ensure directories exist
+###############################################################################
+echo "  Preparing directories..."
+
+mkdir -p "${SYNAPSE_CONF_DIR}" "${SYNAPSE_DATA_DIR}" "${SYNAPSE_LOG_DIR}"
+chown -R matrix-synapse:matrix-synapse "${SYNAPSE_DATA_DIR}" "${SYNAPSE_LOG_DIR}" 2>/dev/null || true
+chmod 750 "${SYNAPSE_DATA_DIR}" "${SYNAPSE_LOG_DIR}" 2>/dev/null || true
+
+###############################################################################
+# Generate signing key (robust)
+###############################################################################
 echo "  Generating Matrix signing key..."
-if [[ ! -f "${SYNAPSE_DATA_DIR}/${DOMAIN}.signing.key" ]]; then
-  sudo -u matrix-synapse python3 -c "
-from signedjson.key import generate_signing_key, write_signing_keys
-key = generate_signing_key('a_RsaO')
-with open('${SYNAPSE_DATA_DIR}/${DOMAIN}.signing.key', 'w') as f:
-    write_signing_keys(f, [key])
-print('  Signing key generated.')
-"
-  chown matrix-synapse:matrix-synapse "${SYNAPSE_DATA_DIR}/${DOMAIN}.signing.key"
-  chmod 600 "${SYNAPSE_DATA_DIR}/${DOMAIN}.signing.key"
+
+if [[ -f "${SIGNING_KEY}" ]]; then
+  echo "  Signing key already exists — keeping it."
 else
-  echo "  Signing key already exists, keeping it."
+  # Preferred: use Synapse packaged tool if present
+  if command -v generate_signing_key >/dev/null 2>&1; then
+    sudo -u matrix-synapse generate_signing_key -o "${SIGNING_KEY}"
+  else
+    # Fallback: python import (works once python3-signedjson is installed)
+    sudo -u matrix-synapse python3 - <<PY
+from signedjson.key import generate_signing_key, write_signing_keys
+key = generate_signing_key("a_RsaO")
+with open("${SIGNING_KEY}", "w") as f:
+    write_signing_keys(f, [key])
+print("Signing key generated")
+PY
+  fi
+
+  chown matrix-synapse:matrix-synapse "${SIGNING_KEY}"
+  chmod 600 "${SIGNING_KEY}"
 fi
 
+###############################################################################
+# Write log config (Synapse expects log_config path)
+###############################################################################
+echo "  Writing log.yaml..."
+
+cat > "${SYNAPSE_CONF_DIR}/log.yaml" <<EOF
+version: 1
+formatters:
+  precise:
+    format: '%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s'
+handlers:
+  file:
+    class: logging.handlers.TimedRotatingFileHandler
+    formatter: precise
+    filename: ${SYNAPSE_LOG_DIR}/homeserver.log
+    when: midnight
+    backupCount: 7
+    encoding: utf8
+  console:
+    class: logging.StreamHandler
+    formatter: precise
+loggers:
+  synapse.storage.SQL:
+    level: WARNING
+root:
+  level: INFO
+  handlers: [file, console]
+disable_existing_loggers: false
+EOF
+
+chown matrix-synapse:matrix-synapse "${SYNAPSE_CONF_DIR}/log.yaml"
+chmod 640 "${SYNAPSE_CONF_DIR}/log.yaml"
+
+###############################################################################
+# Write homeserver.yaml
+###############################################################################
 echo "  Writing homeserver.yaml..."
+
 cat > "${SYNAPSE_CONF_DIR}/homeserver.yaml" <<EOF
 # =============================================================================
 # Matrix Synapse homeserver configuration
@@ -33,7 +132,6 @@ server_name: "${DOMAIN}"
 public_baseurl: "https://${MATRIX_DOMAIN}/"
 pid_file: /var/run/matrix-synapse/homeserver.pid
 
-# ── Listeners ─────────────────────────────────────────────────────────────
 listeners:
   - port: 8008
     tls: false
@@ -44,14 +142,7 @@ listeners:
       - names: [client, federation]
         compress: false
 
-  - port: 9000
-    tls: false
-    type: http
-    bind_addresses: ['127.0.0.1']
-    resources:
-      - names: [metrics, health]
-
-# ── Database (PostgreSQL) ─────────────────────────────────────────────────
+# Database (PostgreSQL)
 database:
   name: psycopg2
   args:
@@ -63,10 +154,9 @@ database:
     cp_min: 5
     cp_max: 10
 
-# ── Logging ──────────────────────────────────────────────────────────────
 log_config: "${SYNAPSE_CONF_DIR}/log.yaml"
 
-# ── Media ────────────────────────────────────────────────────────────────
+# Media
 media_store_path: "${SYNAPSE_DATA_DIR}/media_store"
 max_upload_size: 100M
 max_image_pixels: 32M
@@ -83,34 +173,16 @@ url_preview_ip_range_blacklist:
   - 'fe80::/10'
   - 'fc00::/7'
 
-# ── Signing keys ─────────────────────────────────────────────────────────
-signing_key_path: "${SYNAPSE_DATA_DIR}/${DOMAIN}.signing.key"
+# Signing keys
+signing_key_path: "${SIGNING_KEY}"
 trusted_key_servers:
   - server_name: "matrix.org"
 
-# ── Registration ─────────────────────────────────────────────────────────
+# Registration
 enable_registration: false
 registration_shared_secret: "${MATRIX_SHARED_SECRET}"
 
-# ── Rate limiting ────────────────────────────────────────────────────────
-rc_message:
-  per_second: 0.2
-  burst_count: 10
-rc_registration:
-  per_second: 0.17
-  burst_count: 3
-rc_login:
-  address:
-    per_second: 0.15
-    burst_count: 5
-  account:
-    per_second: 0.18
-    burst_count: 4
-  failed_attempts:
-    per_second: 0.19
-    burst_count: 7
-
-# ── TURN/STUN (for Jitsi + VoIP) ────────────────────────────────────────
+# TURN/STUN
 turn_uris:
   - "turn:${DOMAIN}:3478?transport=udp"
   - "turn:${DOMAIN}:3478?transport=tcp"
@@ -119,22 +191,11 @@ turn_shared_secret: "${TURN_SECRET}"
 turn_user_lifetime: 86400000
 turn_allow_guests: true
 
-# ── Redis/Valkey ─────────────────────────────────────────────────────────
-redis:
-  enabled: true
-  host: 127.0.0.1
-  port: 6379
-  password: "${VALKEY_PASS}"
-
-# ── Federation ───────────────────────────────────────────────────────────
+# Federation policy (tight)
 allow_public_rooms_over_federation: false
 allow_public_rooms_without_auth: false
 
-# ── Push ─────────────────────────────────────────────────────────────────
-push:
-  include_content: false
-
-# ── Admin ────────────────────────────────────────────────────────────────
+# Admin contact
 admin_contact: "mailto:admin@${DOMAIN}"
 suppress_key_server_warning: true
 EOF
@@ -142,63 +203,51 @@ EOF
 chown matrix-synapse:matrix-synapse "${SYNAPSE_CONF_DIR}/homeserver.yaml"
 chmod 640 "${SYNAPSE_CONF_DIR}/homeserver.yaml"
 
-echo "  Writing log.yaml..."
-cat > "${SYNAPSE_CONF_DIR}/log.yaml" <<EOF
-version: 1
-formatters:
-  precise:
-    format: '%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(request)s - %(message)s'
-handlers:
-  file:
-    class: logging.handlers.TimedRotatingFileHandler
-    formatter: precise
-    filename: ${SYNAPSE_LOG_DIR}/homeserver.log
-    when: midnight
-    backupCount: 7
-    encoding: utf8
-  console:
-    class: logging.StreamHandler
-    formatter: precise
-loggers:
-    synapse.storage.SQL:
-        level: WARNING
-root:
-    level: WARNING
-    handlers: [file, console]
-disable_existing_loggers: false
-EOF
-chown matrix-synapse:matrix-synapse "${SYNAPSE_CONF_DIR}/log.yaml"
-
-echo "  Running Synapse DB migration..."
-sudo -u matrix-synapse python3 -m synapse.app.homeserver \
-  --config-path "${SYNAPSE_CONF_DIR}/homeserver.yaml" \
-  --generate-config \
-  --report-stats=no \
-  --server-name "${DOMAIN}" 2>/dev/null || true
-
+###############################################################################
+# Start Synapse
+###############################################################################
 echo "  Starting Matrix Synapse..."
+
+systemctl daemon-reload
 systemctl enable matrix-synapse
 systemctl restart matrix-synapse
 
-echo "  Waiting for Synapse health endpoint..."
-for i in $(seq 1 30); do
-  curl -sf "http://127.0.0.1:9000/health" &>/dev/null && break
+###############################################################################
+# Wait for Synapse to respond (reliable endpoint)
+###############################################################################
+echo "  Waiting for Synapse API to respond..."
+for i in $(seq 1 45); do
+  if curl -fsS "http://127.0.0.1:8008/_matrix/client/versions" >/dev/null 2>&1; then
+    break
+  fi
   sleep 2
 done
 
-if curl -sf "http://127.0.0.1:9000/health" &>/dev/null; then
-  echo "  Synapse is healthy."
+if curl -fsS "http://127.0.0.1:8008/_matrix/client/versions" >/dev/null 2>&1; then
+  echo "  Synapse is responding."
 else
-  echo "  WARNING: Synapse health check not responding yet (may still be starting)"
+  echo
+  echo "  WARNING: Synapse did not respond in time."
+  echo "  Check logs:"
+  echo "  journalctl -u matrix-synapse --no-pager -n 200"
 fi
 
+###############################################################################
+# Create admin user (idempotent)
+###############################################################################
 echo "  Creating Matrix admin user: ${ADMIN_USER}..."
-sleep 2
-register_new_matrix_user \
-  -c "${SYNAPSE_CONF_DIR}/homeserver.yaml" \
-  -u "${ADMIN_USER}" \
-  -p "${ADMIN_PASS}" \
-  -a \
-  http://127.0.0.1:8008 2>/dev/null && \
-  echo "  Admin user @${ADMIN_USER}:${DOMAIN} created." || \
-  echo "  (Admin user may already exist — skipping)"
+
+if command -v register_new_matrix_user >/dev/null 2>&1; then
+  if register_new_matrix_user -c "${SYNAPSE_CONF_DIR}/homeserver.yaml" \
+      -u "${ADMIN_USER}" -p "${ADMIN_PASS}" -a 2>/dev/null; then
+    echo "  Admin user @${ADMIN_USER}:${DOMAIN} created."
+  else
+    echo "  (Admin user may already exist — skipping)"
+  fi
+else
+  echo "  WARNING: register_new_matrix_user not found. Is matrix-synapse installed correctly?"
+fi
+
+echo
+echo "[✓] 03-synapse-config.sh complete"
+echo
