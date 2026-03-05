@@ -12,6 +12,10 @@ echo "  synapse-config"
 echo "══════════════════════════════════════════════════"
 echo
 
+###############################################################################
+# Paths
+###############################################################################
+
 SYNAPSE_CONF_DIR="/etc/matrix-synapse"
 SYNAPSE_DATA_DIR="/var/lib/matrix-synapse"
 SYNAPSE_LOG_DIR="/var/log/matrix-synapse"
@@ -25,9 +29,9 @@ SIGNING_KEY="${SYNAPSE_DATA_DIR}/${DOMAIN}.signing.key"
 
 echo "  Ensuring Synapse packages are installed..."
 
-apt-get update
+apt-get update -y
 
-apt-get install -y \
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
   matrix-synapse-py3 \
   python3-psycopg2 \
   python3-signedjson \
@@ -50,14 +54,23 @@ chown -R matrix-synapse:matrix-synapse "${SYNAPSE_LOG_DIR}"
 chown -R matrix-synapse:matrix-synapse "${SYNAPSE_RUN_DIR}"
 
 ###############################################################################
-# Generate signing key
+# Generate signing key (modern Synapse method)
 ###############################################################################
 
 echo "  Generating Matrix signing key..."
 
 if [[ ! -f "${SIGNING_KEY}" ]]; then
 
-sudo -u matrix-synapse generate_signing_key -o "${SIGNING_KEY}"
+sudo -u matrix-synapse python3 <<PY
+from signedjson.key import generate_signing_key, write_signing_keys
+
+key = generate_signing_key("a_1")
+
+with open("${SIGNING_KEY}", "w") as f:
+    write_signing_keys(f, [key])
+
+print("Signing key generated")
+PY
 
 chown matrix-synapse:matrix-synapse "${SIGNING_KEY}"
 chmod 600 "${SIGNING_KEY}"
@@ -97,10 +110,8 @@ root:
 disable_existing_loggers: false
 EOF
 
-chown matrix-synapse:matrix-synapse "${SYNAPSE_CONF_DIR}/log.yaml"
-
 ###############################################################################
-# Write homeserver config
+# Write homeserver.yaml
 ###############################################################################
 
 echo "  Writing homeserver.yaml..."
@@ -156,8 +167,28 @@ turn_user_lifetime: 86400000
 turn_allow_guests: true
 EOF
 
-chown matrix-synapse:matrix-synapse "${SYNAPSE_CONF_DIR}/homeserver.yaml"
+###############################################################################
+# Fix ownership
+###############################################################################
+
+chown -R matrix-synapse:matrix-synapse "${SYNAPSE_CONF_DIR}"
 chmod 640 "${SYNAPSE_CONF_DIR}/homeserver.yaml"
+
+###############################################################################
+# Bootstrap database schema (critical for automated installs)
+###############################################################################
+
+echo "  Initializing Synapse database..."
+
+sudo -u matrix-synapse python3 -m synapse.app.homeserver \
+  --config-path "${SYNAPSE_CONF_DIR}/homeserver.yaml" \
+  --report-stats=no &
+
+BOOT_PID=$!
+
+sleep 6
+
+kill "${BOOT_PID}" 2>/dev/null || true
 
 ###############################################################################
 # Start Synapse service
@@ -167,7 +198,8 @@ echo "  Starting Matrix Synapse..."
 
 systemctl daemon-reload
 systemctl enable matrix-synapse
-systemctl restart matrix-synapse
+
+systemctl try-restart matrix-synapse || systemctl start matrix-synapse
 
 ###############################################################################
 # Wait for Synapse
@@ -181,6 +213,10 @@ for i in $(seq 1 30); do
   fi
   sleep 2
 done
+
+###############################################################################
+# Health check
+###############################################################################
 
 if curl -fs http://127.0.0.1:8008/_matrix/client/versions >/dev/null 2>&1; then
   echo "  Synapse is responding."
