@@ -1,18 +1,13 @@
 #!/bin/bash
 ###############################################################################
 # BUILD PHASE - Stage 03
-# Install Valkey binary
+# Install Valkey using the official APT repository
 #
-# This stage installs Valkey but does NOT configure it.
-# Configuration (password, bind, persistence) happens in setup phase.
+# This stage installs the Valkey software only.
+# Configuration (password, bind, persistence) occurs during setup phase.
 ###############################################################################
 
 set -euo pipefail
-
-VALKEY_VERSION="8.0.2"
-VALKEY_TARBALL="valkey-${VALKEY_VERSION}-linux-x86_64.tar.gz"
-VALKEY_URL="https://github.com/valkey-io/valkey/releases/download/${VALKEY_VERSION}/${VALKEY_TARBALL}"
-INSTALL_DIR="/opt/valkey"
 
 echo
 echo "══════════════════════════════════════════════════"
@@ -36,109 +31,58 @@ fi
 echo "==> Installing prerequisites..."
 
 apt-get update
-apt-get install -y wget tar
+apt-get install -y curl gpg
 
 ###############################################################################
-# Download Valkey
+# Add Valkey APT repository
 ###############################################################################
 
-echo "==> Downloading Valkey ${VALKEY_VERSION}..."
+echo "==> Adding Valkey APT repository..."
 
-mkdir -p /tmp/valkey-build
+install -d /etc/apt/keyrings
 
-wget -q --show-progress \
-  -O "/tmp/valkey-build/${VALKEY_TARBALL}" \
-  "${VALKEY_URL}"
+curl -fsSL https://apt.valkey.io/gpg.key \
+  | gpg --dearmor -o /etc/apt/keyrings/valkey.gpg
 
-###############################################################################
-# Install binaries
-###############################################################################
-
-echo "==> Installing Valkey to ${INSTALL_DIR}..."
-
-mkdir -p "${INSTALL_DIR}"
-
-tar -xzf "/tmp/valkey-build/${VALKEY_TARBALL}" \
-  -C "${INSTALL_DIR}" \
-  --strip-components=1
+cat > /etc/apt/sources.list.d/valkey.list <<EOF
+deb [signed-by=/etc/apt/keyrings/valkey.gpg] https://apt.valkey.io/debian bookworm main
+EOF
 
 ###############################################################################
-# Create valkey user
+# Install Valkey
 ###############################################################################
 
-echo "==> Creating valkey system user..."
+echo "==> Installing Valkey..."
 
-id valkey &>/dev/null || \
-  useradd --system --no-create-home --shell /usr/sbin/nologin valkey
+apt-get update
+apt-get install -y valkey
 
 ###############################################################################
-# Create directories
+# Ensure required directories exist
 ###############################################################################
 
-echo "==> Creating directories..."
+echo "==> Ensuring Valkey directories exist..."
 
-mkdir -p \
-  /var/lib/valkey \
-  /var/log/valkey \
-  /etc/valkey
+mkdir -p /etc/valkey
+mkdir -p /var/lib/valkey
+mkdir -p /var/log/valkey
 
 chown -R valkey:valkey /var/lib/valkey
 chown -R valkey:valkey /var/log/valkey
 
 ###############################################################################
-# Create binary symlinks
+# Ensure service exists but do not start it
 ###############################################################################
 
-echo "==> Creating symlinks..."
-
-ln -sf "${INSTALL_DIR}/bin/valkey-server" /usr/local/bin/valkey-server
-ln -sf "${INSTALL_DIR}/bin/valkey-cli"    /usr/local/bin/valkey-cli
-
-###############################################################################
-# Install systemd service
-###############################################################################
-
-echo "==> Installing systemd service..."
-
-cat > /etc/systemd/system/valkey.service <<'EOF'
-[Unit]
-Description=Valkey In-Memory Data Store
-Documentation=https://valkey.io
-After=network.target
-
-[Service]
-Type=notify
-User=valkey
-Group=valkey
-
-ExecStart=/usr/local/bin/valkey-server /etc/valkey/valkey.conf
-
-ExecStop=/bin/sh -c '/usr/local/bin/valkey-cli -a $(grep requirepass /etc/valkey/valkey.conf | awk "{print \$2}") shutdown 2>/dev/null || kill $MAINPID'
-
-TimeoutStopSec=0
-
-Restart=always
-RestartSec=5
-
-LimitNOFILE=65536
-
-PrivateTmp=yes
-ProtectSystem=strict
-ReadWritePaths=/var/lib/valkey /var/log/valkey /etc/valkey
-
-[Install]
-WantedBy=multi-user.target
-EOF
+echo "==> Preparing systemd service..."
 
 systemctl daemon-reload
 
 ###############################################################################
-# Cleanup
+# Final message
 ###############################################################################
 
-rm -rf /tmp/valkey-build
-
 echo
-echo "==> Valkey ${VALKEY_VERSION} installed successfully"
-echo "==> Service not started yet (configured in setup phase)"
+echo "==> Valkey installed successfully via APT"
+echo "==> Service will be configured and started during setup phase"
 echo
