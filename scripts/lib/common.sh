@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # lib/common.sh — Shared functions for all matrix-stack admin scripts
-# Source this file: source "$(dirname "$0")/../lib/common.sh"
+# Source this file: source "$(dirname "$0")/lib/common.sh"
 # =============================================================================
 
 # ── Colour output ─────────────────────────────────────────────────────────────
@@ -44,8 +44,13 @@ SYNAPSE_ADMIN_API_V2="${SYNAPSE_URL}/_synapse/admin/v2"
 # ── Check Synapse is running ──────────────────────────────────────────────────
 require_synapse() {
   local HTTP_CODE
+  # Try /health first (if metrics listener enabled), then the main client API
   HTTP_CODE=$(curl -so /dev/null -w "%{http_code}" \
     "${SYNAPSE_URL}/health" 2>/dev/null || echo "000")
+  if [[ "$HTTP_CODE" != "200" ]]; then
+    HTTP_CODE=$(curl -so /dev/null -w "%{http_code}" \
+      "${SYNAPSE_URL}/_matrix/client/versions" 2>/dev/null || echo "000")
+  fi
   if [[ "$HTTP_CODE" != "200" ]]; then
     error "Matrix Synapse is not responding (HTTP ${HTTP_CODE})."
     error "Check: systemctl status matrix-synapse"
