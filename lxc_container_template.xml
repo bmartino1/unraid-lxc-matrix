@@ -5,7 +5,7 @@
   <Release>bookworm</Release>
   <Architecture>amd64</Architecture>
   <Repository>https://github.com/bmartino1/unraid-lxc-matrix</Repository>
-  <Description>Matrix Synapse + Element Web + Jitsi Meet self-hosted stack</Description>
+  <Description>Matrix Synapse / Element Web / Jitsi Meet self-hosted stack</Description>
   <Privileged>true</Privileged>
   <Autostart>false</Autostart>
   <Beta>true</Beta>
@@ -21,7 +21,7 @@
       cd /root
       ./setup.sh --domain chat.yourdomain.com
 
-    All services are pre-installed. setup.sh configures them for your domain.
+    All services should be pre-installed. setup.sh configures them for your domain. script folder to help manage
   </Overview>
   <Category>Tools: Network:</Category>
   <WebUI>https://[IP]/</WebUI>
