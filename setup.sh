@@ -2,57 +2,46 @@
 # =============================================================================
 # setup.sh — Matrix Synapse + Element Web + Jitsi + Nginx Stack Configurator
 # =============================================================================
-# Run this inside the LXC after first boot to configure your stack.
-#
-# Usage:
-#   ./setup.sh --domain chat.example.com [OPTIONS]
-#
-# Options:
-#   --domain <domain>       Required. Base domain (Element served here)
-#   --admin-user <user>     Matrix admin username          (default: admin)
-#   --admin-pass <pass>     Matrix admin password          (auto-generated)
-#   --postgres-pass <pass>  PostgreSQL synapse DB password (auto-generated)
-#   --valkey-pass <pass>    Valkey cache password          (auto-generated)
-#   --jitsi-pass <pass>     Jitsi internal XMPP password   (auto-generated)
-#   --turn-secret <secret>  coturn TURN shared secret      (auto-generated)
-#   --skip-ssl              Use self-signed certs instead of Let's Encrypt
-#   --no-ssl                Alias for --skip-ssl
-#   --staging               Use Let's Encrypt staging (testing only)
-#   --reconfigure           Re-run config without reinstalling (update domain etc)
-#   --help                  Show this help
-#
-# What gets configured:
-#   chat.example.com        → Element Web (Nginx HTTPS)
-#   matrix.chat.example.com → Matrix Synapse homeserver (Nginx HTTPS)
-#   meet.chat.example.com   → Jitsi Meet (Nginx HTTPS, widget-only by design)
-#
-# Security note:
-#   meet.<domain> is NOT publicly linked from Element — accessible only as an
-#   Element widget. Nginx restricts direct browsing to the Jitsi URL.
-# =============================================================================
 
 set -euo pipefail
+
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ── Colour output ─────────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+# ─────────────────────────────────────────────────────────────
+# Colours
+# ─────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
 
 log()    { echo -e "${GREEN}[✓]${NC} $*"; }
 warn()   { echo -e "${YELLOW}[!]${NC} $*"; }
 error()  { echo -e "${RED}[✗]${NC} $*" >&2; }
 info()   { echo -e "${BLUE}[→]${NC} $*"; }
+
 header() {
-  echo ""
-  echo -e "${BLUE}${BOLD}══════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}${BOLD}  $*${NC}"
-  echo -e "${BLUE}${BOLD}══════════════════════════════════════════════════${NC}"
+echo
+echo -e "${BLUE}${BOLD}══════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}${BOLD}  $*${NC}"
+echo -e "${BLUE}${BOLD}══════════════════════════════════════════════════${NC}"
 }
+
+# ─────────────────────────────────────────────────────────────
+# Password Generators
+# ─────────────────────────────────────────────────────────────
 
 gen_pass() { openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 40; }
 gen_hex()  { openssl rand -hex 32; }
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Defaults
+# ─────────────────────────────────────────────────────────────
+
 DOMAIN=""
 ADMIN_USER="admin"
 ADMIN_PASS=""
@@ -60,60 +49,75 @@ POSTGRES_PASS=""
 VALKEY_PASS=""
 JITSI_PASS=""
 TURN_SECRET=""
+
 SKIP_SSL=false
 STAGING=false
 RECONFIGURE=false
 
-# ── Arg parsing ───────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# CLI Argument Parsing
+# ─────────────────────────────────────────────────────────────
+
+if [[ "${1:-}" == "--reset" ]]; then
+    set -- --reconfigure
+fi
+
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --domain)        DOMAIN="$2";        shift 2 ;;
-    --admin-user)    ADMIN_USER="$2";    shift 2 ;;
-    --admin-pass)    ADMIN_PASS="$2";    shift 2 ;;
+case "$1" in
+    --domain)        DOMAIN="$2"; shift 2 ;;
+    --admin-user)    ADMIN_USER="$2"; shift 2 ;;
+    --admin-pass)    ADMIN_PASS="$2"; shift 2 ;;
     --postgres-pass) POSTGRES_PASS="$2"; shift 2 ;;
-    --valkey-pass)   VALKEY_PASS="$2";   shift 2 ;;
-    --jitsi-pass)    JITSI_PASS="$2";    shift 2 ;;
-    --turn-secret)   TURN_SECRET="$2";   shift 2 ;;
+    --valkey-pass)   VALKEY_PASS="$2"; shift 2 ;;
+    --jitsi-pass)    JITSI_PASS="$2"; shift 2 ;;
+    --turn-secret)   TURN_SECRET="$2"; shift 2 ;;
     --skip-ssl|--no-ssl) SKIP_SSL=true; shift ;;
-    --staging)       STAGING=true;       shift ;;
-    --reconfigure)   RECONFIGURE=true;   shift ;;
+    --staging)       STAGING=true; shift ;;
+    --reconfigure)   RECONFIGURE=true; shift ;;
     --help|-h)
-      head -40 "$0" | grep '^#' | sed 's/^# \{0,2\}//'
-      exit 0
-      ;;
-    *) error "Unknown option: $1 (use --help)"; exit 1 ;;
-  esac
+        sed -n '1,80p' "$0" | grep '^#' | sed 's/^# \{0,2\}//'
+        exit 0
+    ;;
+    *)
+        error "Unknown option: $1"
+        exit 1
+    ;;
+esac
 done
 
-# ── Validate ──────────────────────────────────────────────────────────────────
-[[ -z "$DOMAIN" ]] && { error "Required: --domain chat.example.com"; exit 1; }
-[[ $EUID -ne 0 ]]  && { error "Must run as root inside the LXC"; exit 1; }
+# ─────────────────────────────────────────────────────────────
+# Validation
+# ─────────────────────────────────────────────────────────────
 
-# Validate packages are present (build phase must have run)
-for cmd in nginx psql valkey-server python3 jicofo; do
-  command -v "$cmd" &>/dev/null || \
-    systemctl list-unit-files | grep -q "^${cmd%%-*}" || true
-done
+[[ -z "$DOMAIN" ]] && { error "Required: --domain example.com"; exit 1; }
+[[ $EUID -ne 0 ]] && { error "Must run as root"; exit 1; }
 
-# ── Generate missing secrets ──────────────────────────────────────────────────
-[[ -z "$ADMIN_PASS"    ]] && ADMIN_PASS="$(gen_pass)"
-[[ -z "$POSTGRES_PASS" ]] && POSTGRES_PASS="$(gen_pass)"
-[[ -z "$VALKEY_PASS"   ]] && VALKEY_PASS="$(gen_pass)"
-[[ -z "$JITSI_PASS"    ]] && JITSI_PASS="$(gen_pass)"
-[[ -z "$TURN_SECRET"   ]] && TURN_SECRET="$(gen_hex)"
+# ─────────────────────────────────────────────────────────────
+# Generate Secrets
+# ─────────────────────────────────────────────────────────────
 
-MATRIX_SHARED_SECRET="$(gen_hex)"
-JITSI_APP_SECRET="$(gen_pass)"
+[[ -z "$ADMIN_PASS" ]]    && ADMIN_PASS=$(gen_pass)
+[[ -z "$POSTGRES_PASS" ]] && POSTGRES_PASS=$(gen_pass)
+[[ -z "$VALKEY_PASS" ]]   && VALKEY_PASS=$(gen_pass)
+[[ -z "$JITSI_PASS" ]]    && JITSI_PASS=$(gen_pass)
+[[ -z "$TURN_SECRET" ]]   && TURN_SECRET=$(gen_hex)
+
+MATRIX_SHARED_SECRET=$(gen_hex)
+JITSI_APP_SECRET=$(gen_pass)
+
 LXC_IP=$(hostname -I | awk '{print $1}')
 
-# ── Computed sub-domains ──────────────────────────────────────────────────────
 MATRIX_DOMAIN="matrix.${DOMAIN}"
 JITSI_DOMAIN="meet.${DOMAIN}"
 ELEMENT_DOMAIN="${DOMAIN}"
 
-# ── Save environment (chmod 600 - secrets protected) ─────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Save Environment
+# ─────────────────────────────────────────────────────────────
+
 ENV_FILE="/root/.matrix-stack.env"
-cat > "${ENV_FILE}" <<EOF
+
+cat > "$ENV_FILE" <<EOF
 DOMAIN=${DOMAIN}
 MATRIX_DOMAIN=${MATRIX_DOMAIN}
 JITSI_DOMAIN=${JITSI_DOMAIN}
@@ -129,19 +133,22 @@ MATRIX_SHARED_SECRET=${MATRIX_SHARED_SECRET}
 JITSI_APP_SECRET=${JITSI_APP_SECRET}
 SKIP_SSL=${SKIP_SSL}
 STAGING=${STAGING}
-SETUP_DIR=${SETUP_DIR}
 SETUP_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
-chmod 600 "${ENV_FILE}"
 
-# Export env
+chmod 600 "$ENV_FILE"
+
 set -a
-source "${ENV_FILE}"
+source "$ENV_FILE"
 set +a
 
-# ── Banner ────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Banner
+# ─────────────────────────────────────────────────────────────
+
 clear
-echo ""
+
+echo
 echo -e "${CYAN}${BOLD}"
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║   Matrix Synapse + Element Web + Jitsi Stack Setup  ║"
@@ -151,63 +158,114 @@ echo -e "${NC}"
 echo -e "  ${BOLD}Domain:${NC}       ${DOMAIN}"
 echo -e "  ${BOLD}Element Web:${NC}  https://${ELEMENT_DOMAIN}"
 echo -e "  ${BOLD}Matrix API:${NC}   https://${MATRIX_DOMAIN}"
-echo -e "  ${BOLD}Jitsi Meet:${NC}   https://${JITSI_DOMAIN}  (widget-only)"
+echo -e "  ${BOLD}Jitsi Meet:${NC}   https://${JITSI_DOMAIN}"
 echo -e "  ${BOLD}LXC IP:${NC}       ${LXC_IP}"
-echo -e "  ${BOLD}SSL:${NC}          $([[ $SKIP_SSL == true ]] && echo 'Self-signed' || echo "Let's Encrypt$([[ $STAGING == true ]] && echo ' (staging)' || echo '')")"
-echo ""
-echo -e "  ${YELLOW}Credentials saved to:${NC} ${ENV_FILE}"
-echo ""
+echo
 
-# ── Run setup sub-scripts in order ───────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Run Setup Scripts
+# ─────────────────────────────────────────────────────────────
+
 SETUP_SCRIPTS_DIR="${SETUP_DIR}/setup"
 
-if [[ ! -d "${SETUP_SCRIPTS_DIR}" ]]; then
-  error "Setup scripts not found at ${SETUP_SCRIPTS_DIR}"
-  exit 1
+if [[ ! -d "$SETUP_SCRIPTS_DIR" ]]; then
+error "Missing setup directory: $SETUP_SCRIPTS_DIR"
+exit 1
 fi
 
-SETUP_SCRIPTS=$(ls -1 "${SETUP_SCRIPTS_DIR}/" | grep '^[0-9][0-9]-' | sort)
+for script in $(ls "$SETUP_SCRIPTS_DIR"/[0-9][0-9]-*.sh | sort); do
 
-for script in ${SETUP_SCRIPTS}; do
-  header "$(echo $script | sed 's/\.sh$//' | sed 's/^[0-9]*-//')"
-  chmod +x "${SETUP_SCRIPTS_DIR}/${script}"
-  bash "${SETUP_SCRIPTS_DIR}/${script}"
+    name=$(basename "$script")
 
-  EXIT_STATUS=$?
-  if [[ $EXIT_STATUS -ne 0 ]]; then
-    error "Setup step '${script}' failed (exit ${EXIT_STATUS})."
-    exit 1
-  fi
+    header "$name"
 
-  log "${script} complete"
+    chmod +x "$script"
+
+    if ! bash "$script"; then
+        error "Setup step failed: $name"
+        exit 1
+    fi
+
+    log "$name complete"
+
 done
 
-# ── Final summary ─────────────────────────────────────────────────────────────
-header "Setup Complete! 🎉"
+# ─────────────────────────────────────────────────────────────
+# Wait for Synapse
+# ─────────────────────────────────────────────────────────────
 
-echo ""
-echo -e "  ${GREEN}${BOLD}Your Matrix stack is running on LXC IP: ${LXC_IP}${NC}"
-echo ""
-echo -e "  ${CYAN}Element Web:${NC}   https://${ELEMENT_DOMAIN}"
-echo -e "  ${CYAN}Matrix API:${NC}    https://${MATRIX_DOMAIN}"
-echo -e "  ${CYAN}Jitsi Meet:${NC}    https://${JITSI_DOMAIN}  (via Element widget only)"
-echo ""
-echo -e "  ${YELLOW}${BOLD}Matrix Admin Account:${NC}"
-echo -e "    Username: ${ADMIN_USER}"
-echo -e "    Password: ${ADMIN_PASS}"
-echo ""
+header "Waiting for Synapse"
 
-echo -e "  ${YELLOW}${BOLD}Required DNS records (→ ${LXC_IP}):${NC}"
-echo -e "    A  ${ELEMENT_DOMAIN}"
-echo -e "    A  ${MATRIX_DOMAIN}"
-echo -e "    A  ${JITSI_DOMAIN}"
-echo -e "    SRV _matrix._tcp.${DOMAIN}  10 0 443 ${MATRIX_DOMAIN}"
-echo ""
+for i in {1..30}; do
 
-if [[ "$SKIP_SSL" == "true" ]]; then
-  warn "Running with self-signed certificates."
-  warn "When DNS is ready, run: ./scripts/renew-ssl.sh"
+    if curl -fs http://127.0.0.1:8008/_matrix/client/versions >/dev/null 2>&1; then
+        log "Synapse is responding"
+        break
+    fi
+
+    sleep 2
+
+done
+
+# ─────────────────────────────────────────────────────────────
+# Ensure Admin User Exists
+# ─────────────────────────────────────────────────────────────
+
+header "Matrix Admin Setup"
+
+ADMIN_EXISTS=$(sudo -u postgres psql -d synapse -tAc \
+"SELECT 1 FROM users WHERE name='${ADMIN_USER}'")
+
+if [[ "$ADMIN_EXISTS" == "1" ]]; then
+
+    warn "Admin user exists — resetting password"
+
+else
+
+    info "Creating Matrix admin account"
+
 fi
 
-echo -e "  ${BLUE}All credentials saved to:${NC} ${ENV_FILE}"
-echo ""
+register_new_matrix_user \
+-u "${ADMIN_USER}" \
+-p "${ADMIN_PASS}" \
+-a \
+-c /etc/matrix-synapse/homeserver.yaml \
+http://127.0.0.1:8008 || true
+
+log "Admin account verified"
+
+# ─────────────────────────────────────────────────────────────
+# Final Output
+# ─────────────────────────────────────────────────────────────
+
+header "Setup Complete 🎉"
+
+echo
+echo -e "${GREEN}Matrix stack running at:${NC}"
+echo
+echo "Element Web:"
+echo "https://${ELEMENT_DOMAIN}"
+echo
+echo "Matrix API:"
+echo "https://${MATRIX_DOMAIN}"
+echo
+echo "Jitsi:"
+echo "https://${JITSI_DOMAIN}"
+echo
+
+echo -e "${YELLOW}Matrix Admin:${NC}"
+echo "User: ${ADMIN_USER}"
+echo "Pass: ${ADMIN_PASS}"
+echo
+
+echo -e "${YELLOW}DNS Records Required:${NC}"
+echo "A  ${ELEMENT_DOMAIN}  → ${LXC_IP}"
+echo "A  ${MATRIX_DOMAIN}   → ${LXC_IP}"
+echo "A  ${JITSI_DOMAIN}    → ${LXC_IP}"
+echo "SRV _matrix._tcp.${DOMAIN} 10 0 443 ${MATRIX_DOMAIN}"
+echo
+
+echo "Credentials stored at:"
+echo "$ENV_FILE"
+echo
