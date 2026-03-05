@@ -71,6 +71,22 @@ A static IP is strongly recommended since DNS records need to point to this cont
 nano /etc/systemd/network/eth0.network
 ```
 
+example:
+```
+[Match]
+Name=eth0
+
+[Network]
+Address=192.168.1.50/24
+Gateway=192.168.1.1
+DNS=192.168.1.1
+DNS=8.8.8.8
+Domains=local
+
+[Link]
+MTUBytes=1500
+```
+
 After changing the IP, fully **stop** and **start** the container (do not just restart — a full stop/start is required for the new IP to take effect).
 
 ### Step 5 — Point DNS to the LXC IP
