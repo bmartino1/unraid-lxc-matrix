@@ -2,13 +2,6 @@
 ###############################################################################
 # SETUP PHASE 01
 # Configure PostgreSQL for Matrix Synapse
-#
-# - Installs PostgreSQL if missing
-# - Starts/enables service
-# - Creates synapse role
-# - Creates synapse database with correct locale
-# - Adds pg_hba authentication rules
-# - Safe to run multiple times
 ###############################################################################
 
 set -euo pipefail
@@ -34,14 +27,15 @@ fi
 ###############################################################################
 
 echo "  Starting PostgreSQL..."
+
 systemctl enable postgresql
 systemctl start postgresql
 
 ###############################################################################
-# Wait for service
+# Wait for service readiness
 ###############################################################################
 
-echo "  Waiting for PostgreSQL to be ready..."
+echo "  Waiting for PostgreSQL..."
 
 for i in $(seq 1 30); do
   if pg_isready -U postgres -q; then
@@ -56,18 +50,13 @@ if ! pg_isready -U postgres -q; then
 fi
 
 ###############################################################################
-# Detect correct locale
+# Synapse recommended locale
 ###############################################################################
 
-echo "  Detecting locale..."
+echo "  Using PostgreSQL locale: C"
 
-if locale -a | grep -q "^C\.utf8$"; then
-  DB_LOCALE="C.utf8"
-else
-  DB_LOCALE="C"
-fi
-
-echo "  Using locale: ${DB_LOCALE}"
+DB_COLLATE="C"
+DB_CTYPE="C"
 
 ###############################################################################
 # Create synapse role
@@ -98,15 +87,17 @@ echo "  Ensuring synapse database exists..."
 DB_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='synapse'")
 
 if [ "${DB_EXISTS}" != "1" ]; then
+
   sudo -u postgres createdb \
     --encoding=UTF8 \
-    --lc-collate="${DB_LOCALE}" \
-    --lc-ctype="${DB_LOCALE}" \
+    --lc-collate="${DB_COLLATE}" \
+    --lc-ctype="${DB_CTYPE}" \
     --template=template0 \
     --owner=synapse \
     synapse
 
   echo "  Database created."
+
 else
   echo "  Database already exists."
 fi
@@ -120,13 +111,15 @@ PG_HBA=$(sudo -u postgres psql -tAc "SHOW hba_file")
 echo "  Configuring pg_hba.conf (${PG_HBA})..."
 
 if ! grep -q "Matrix Synapse - added by setup.sh" "${PG_HBA}"; then
-  cat >> "${PG_HBA}" <<EOF
+
+cat >> "${PG_HBA}" <<EOF
 
 # Matrix Synapse - added by setup.sh
 local   synapse         synapse                                 md5
 host    synapse         synapse         127.0.0.1/32            md5
 host    synapse         synapse         ::1/128                 md5
 EOF
+
 fi
 
 ###############################################################################
@@ -137,4 +130,6 @@ systemctl reload postgresql
 
 echo
 echo "  PostgreSQL configured successfully."
+echo
+echo "[✓] 01-postgres-config.sh complete"
 echo
