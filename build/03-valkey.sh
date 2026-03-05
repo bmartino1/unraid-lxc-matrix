@@ -1,10 +1,10 @@
 #!/bin/bash
 ###############################################################################
 # BUILD PHASE - Stage 03
-# Install Valkey using the official APT repository
+# Install Valkey from Debian bookworm-backports
 #
-# This stage installs the Valkey software only.
-# Configuration (password, bind, persistence) occurs during setup phase.
+# This stage installs Valkey only.
+# Configuration happens in the setup phase.
 ###############################################################################
 
 set -euo pipefail
@@ -14,6 +14,8 @@ echo "════════════════════════�
 echo "  build-valkey"
 echo "══════════════════════════════════════════════════"
 echo
+
+BACKPORTS_LIST="/etc/apt/sources.list.d/bookworm-backports.list"
 
 ###############################################################################
 # Skip if already installed
@@ -25,64 +27,54 @@ if command -v valkey-server >/dev/null 2>&1; then
 fi
 
 ###############################################################################
-# Install prerequisites
+# Ensure backports repository exists
 ###############################################################################
 
-echo "==> Installing prerequisites..."
+echo "==> Ensuring Debian bookworm-backports repository..."
 
-apt-get update
-apt-get install -y curl gpg
+if ! grep -RqsE '^[[:space:]]*deb[[:space:]].*bookworm-backports' \
+    /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; then
 
-###############################################################################
-# Add Valkey APT repository
-###############################################################################
-
-echo "==> Adding Valkey APT repository..."
-
-install -d /etc/apt/keyrings
-
-curl -fsSL https://apt.valkey.io/gpg.key \
-  | gpg --dearmor -o /etc/apt/keyrings/valkey.gpg
-
-cat > /etc/apt/sources.list.d/valkey.list <<EOF
-deb [signed-by=/etc/apt/keyrings/valkey.gpg] https://apt.valkey.io/debian bookworm main
+  cat > "${BACKPORTS_LIST}" <<'EOF'
+deb http://deb.debian.org/debian bookworm-backports main
 EOF
+
+fi
 
 ###############################################################################
 # Install Valkey
 ###############################################################################
 
-echo "==> Installing Valkey..."
+echo "==> Installing Valkey from bookworm-backports..."
+
+export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y valkey
+apt-get install -y -t bookworm-backports valkey-server valkey-tools
 
 ###############################################################################
-# Ensure required directories exist
+# Ensure directories exist (configuration happens later)
 ###############################################################################
 
-echo "==> Ensuring Valkey directories exist..."
+echo "==> Preparing directories..."
 
 mkdir -p /etc/valkey
 mkdir -p /var/lib/valkey
 mkdir -p /var/log/valkey
 
-chown -R valkey:valkey /var/lib/valkey
-chown -R valkey:valkey /var/log/valkey
+chown -R valkey:valkey /var/lib/valkey /var/log/valkey 2>/dev/null || true
 
 ###############################################################################
-# Ensure service exists but do not start it
+# Reload systemd but do NOT start service
 ###############################################################################
-
-echo "==> Preparing systemd service..."
 
 systemctl daemon-reload
 
 ###############################################################################
-# Final message
+# Done
 ###############################################################################
 
 echo
-echo "==> Valkey installed successfully via APT"
+echo "==> Valkey installed successfully (Debian backports)"
 echo "==> Service will be configured and started during setup phase"
 echo
