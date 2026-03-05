@@ -1,79 +1,56 @@
 #!/bin/bash
-# =============================================================================
-# SETUP PHASE 08
-# SSL / TLS certificate provisioning
-#
-# Behaviour:
-#   --skip-ssl → keep self-signed certs from phase 07
-#   default    → attempt Let's Encrypt
-#
-# Safe behaviour:
-#   - if certbot fails → self-signed certs remain active
-#   - nginx reload still occurs
-# =============================================================================
+###############################################################################
+# SETUP PHASE - 08: SSL/TLS certificate provisioning (non-fatal)
+# - If --skip-ssl: do nothing (self-signed stays)
+# - If certbot fails: warn and continue (NEVER breaks setup)
+###############################################################################
 
 set -euo pipefail
+
+echo
+echo "══════════════════════════════════════════════════"
+echo "  ssl"
+echo "══════════════════════════════════════════════════"
+echo
 
 SSL_DIR="/etc/ssl/nginx"
 CERT_BASE="/etc/letsencrypt/live"
 
 STAGING_FLAG=""
-[[ "${STAGING}" == "true" ]] && STAGING_FLAG="--staging"
+[[ "${STAGING:-false}" == "true" ]] && STAGING_FLAG="--staging"
 
 mkdir -p "${SSL_DIR}"
 
 link_le_cert() {
   local fqdn="$1"
-
-  if [[ -f "${CERT_BASE}/${fqdn}/fullchain.pem" ]]; then
-
+  if [[ -f "${CERT_BASE}/${fqdn}/fullchain.pem" && -f "${CERT_BASE}/${fqdn}/privkey.pem" ]]; then
     ln -sf "${CERT_BASE}/${fqdn}/fullchain.pem" "${SSL_DIR}/${fqdn}.crt"
     ln -sf "${CERT_BASE}/${fqdn}/privkey.pem"   "${SSL_DIR}/${fqdn}.key"
-
     echo "  Linked Let's Encrypt cert for ${fqdn}"
-
-  else
-    echo "  WARNING: cert files missing for ${fqdn}"
+    return 0
   fi
+  return 1
 }
 
-# ─────────────────────────────────────────────────────────
-# Skip SSL mode
-# ─────────────────────────────────────────────────────────
-
-if [[ "${SKIP_SSL}" == "true" ]]; then
-  echo "  --skip-ssl enabled."
-  echo "  Self-signed certificates from phase 07 remain active."
-  echo "  When DNS is ready run: ./scripts/renew-ssl.sh"
+# Always non-fatal exit path
+finish_ok() {
+  echo
+  echo "  SSL step finished (non-fatal)."
   exit 0
+}
+
+if [[ "${SKIP_SSL:-false}" == "true" ]]; then
+  echo "  --skip-ssl enabled: self-signed certificates remain active."
+  echo "  When you want Let's Encrypt later, run: ./scripts/renew-ssl.sh"
+  finish_ok
 fi
-
-
-# ─────────────────────────────────────────────────────────
-# Ensure certbot installed
-# ─────────────────────────────────────────────────────────
-
-if ! command -v certbot >/dev/null 2>&1; then
-
-  echo "  Installing certbot..."
-
-  apt-get update
-  apt-get install -y certbot
-
-fi
-
 
 echo "  Requesting Let's Encrypt certificates..."
 echo "  DNS must resolve to: ${LXC_IP}"
-echo ""
+echo
 
-
-# ─────────────────────────────────────────────────────────
-# Issue certificates
-# ─────────────────────────────────────────────────────────
-
+# certbot is best-effort; never let it kill setup
 for fqdn in "${DOMAIN}" "${MATRIX_DOMAIN}" "${JITSI_DOMAIN}"; do
-
   echo "  Requesting cert for: ${fqdn}"
 
   if certbot certonly \
@@ -84,81 +61,39 @@ for fqdn in "${DOMAIN}" "${MATRIX_DOMAIN}" "${JITSI_DOMAIN}"; do
       --email "admin@${DOMAIN}" \
       --domain "${fqdn}" \
       ${STAGING_FLAG}; then
-
-      link_le_cert "${fqdn}"
-
+    link_le_cert "${fqdn}" || true
   else
-
-      echo "  WARNING: certbot failed for ${fqdn}"
-      echo "  Self-signed certificate remains active."
-
+    echo "  WARNING: certbot failed for ${fqdn}"
+    echo "  Self-signed certificate remains active."
   fi
 
+  echo
 done
 
-
-# ─────────────────────────────────────────────────────────
-# Enable TLS for coturn if cert exists
-# ─────────────────────────────────────────────────────────
-
-if [[ -f "${CERT_BASE}/${DOMAIN}/fullchain.pem" ]]; then
-
-  echo "  Enabling TLS on coturn..."
-
-  sed -i "s|^# cert=.*|cert=${CERT_BASE}/${DOMAIN}/fullchain.pem|" /etc/turnserver.conf
-  sed -i "s|^# pkey=.*|pkey=${CERT_BASE}/${DOMAIN}/privkey.pem|"   /etc/turnserver.conf
-
-  systemctl restart coturn
-
+# Update coturn TLS if DOMAIN cert exists (best-effort)
+if [[ -f "${CERT_BASE}/${DOMAIN}/fullchain.pem" && -f "${CERT_BASE}/${DOMAIN}/privkey.pem" ]]; then
+  echo "  Enabling TLS on coturn (best-effort)..."
+  sed -i "s|^#\s*cert=.*|cert=${CERT_BASE}/${DOMAIN}/fullchain.pem|" /etc/turnserver.conf 2>/dev/null || true
+  sed -i "s|^#\s*pkey=.*|pkey=${CERT_BASE}/${DOMAIN}/privkey.pem|"   /etc/turnserver.conf 2>/dev/null || true
+  systemctl restart coturn 2>/dev/null || true
 fi
 
+echo "  Reloading Nginx with certificates (best-effort)..."
+nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
 
-# ─────────────────────────────────────────────────────────
-# Reload nginx
-# ─────────────────────────────────────────────────────────
-
-echo "  Reloading Nginx with certificates..."
-
-nginx -t
-systemctl reload nginx
-
-
-# ─────────────────────────────────────────────────────────
-# Renewal hook
-# ─────────────────────────────────────────────────────────
-
+# Renewal hook (only useful if certbot succeeds later)
 mkdir -p /etc/letsencrypt/renewal-hooks/deploy
-
-cat > /etc/letsencrypt/renewal-hooks/deploy/matrix-stack-reload.sh <<EOF
+cat > /etc/letsencrypt/renewal-hooks/deploy/matrix-stack-reload.sh <<'EOF'
 #!/bin/bash
-
 SSL_DIR=/etc/ssl/nginx
-
-for fqdn in \$(ls /etc/letsencrypt/live/); do
-
-  [[ -f /etc/letsencrypt/live/\${fqdn}/fullchain.pem ]] || continue
-
-  ln -sf /etc/letsencrypt/live/\${fqdn}/fullchain.pem \${SSL_DIR}/\${fqdn}.crt
-  ln -sf /etc/letsencrypt/live/\${fqdn}/privkey.pem   \${SSL_DIR}/\${fqdn}.key
-
+for fqdn in $(ls /etc/letsencrypt/live/ 2>/dev/null); do
+  [[ -f /etc/letsencrypt/live/${fqdn}/fullchain.pem ]] || continue
+  ln -sf /etc/letsencrypt/live/${fqdn}/fullchain.pem ${SSL_DIR}/${fqdn}.crt
+  ln -sf /etc/letsencrypt/live/${fqdn}/privkey.pem   ${SSL_DIR}/${fqdn}.key
 done
-
-systemctl reload nginx  2>/dev/null || true
+systemctl reload nginx 2>/dev/null || true
 systemctl restart coturn 2>/dev/null || true
 EOF
+chmod +x /etc/letsencrypt/renewal-hooks/deploy/matrix-stack-reload.sh 2>/dev/null || true
 
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/matrix-stack-reload.sh
-
-
-# ─────────────────────────────────────────────────────────
-# Renewal cron
-# ─────────────────────────────────────────────────────────
-
-if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-
-  (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet") | crontab -
-
-fi
-
-
-echo "  SSL setup complete."
+finish_ok
