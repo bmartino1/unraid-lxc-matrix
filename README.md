@@ -76,16 +76,13 @@ http://<Your-Unraid-IP>/LXCAddTemplate
 
 The LXC plugin will detect the downloaded template. Review settings if needed, then click **Create / Apply** and wait for the **Done** button.
 
-### Step 3 — Create the container
-
-Recommended settings:
-
-| Setting | Value |
-|---|---|
+Set your options... In Template Create the container example
 | Container Name | `matrix` |
-| Hostname | `matrix` |
 
-Click **Create**, wait for **Done**, then open the LXC console.
+then open the LXC console.
+
+### Step 2 — Run the intail setup scritps and configurations!
+**See Below**
 
 ---
 
