@@ -74,7 +74,7 @@ Navigate to the LXC template import page in your browser:
 http://<Your-Unraid-IP>/LXCAddTemplate
 ```
 
-The LXC plugin will detect the downloaded template. Review settings if needed, then click **Apply** and wait for the **Done** button.
+The LXC plugin will detect the downloaded template. Review settings if needed, then click **Create / Apply** and wait for the **Done** button.
 
 ### Step 3 — Create the container
 
