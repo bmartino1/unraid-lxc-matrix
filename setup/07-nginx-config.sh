@@ -1,41 +1,37 @@
 #!/bin/bash
 ###############################################################################
-# Configure Nginx — matches PVE stream mux + vhost architecture
-#
-# Stream block muxes port 443:
-#   turn.DOMAIN → coturn :5349 (TLS passthrough)
-#   everything else → internal :60443 (nginx http termination)
-#
-# HTTP block on :60443:
-#   DOMAIN → Element Web + Synapse (path routing)
-#   meet.DOMAIN → Jitsi Meet (referer-restricted)
+# Configure Nginx — mirrors known-working PVE stream mux + vhost architecture.
 ###############################################################################
 set -euo pipefail
+
 echo "  Configuring Nginx..."
 
-mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/ssl/nginx
+mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/modules-enabled /etc/ssl/nginx
 rm -f /etc/nginx/sites-enabled/*
 
-# ── Self-signed placeholder certs ──────────────────────────────────────────
 SSL_DIR="/etc/ssl/nginx"
 for fqdn in "${DOMAIN}" "${MEET}"; do
-  if [[ ! -f "${SSL_DIR}/${fqdn}.crt" ]]; then
+  if [[ ! -f "${SSL_DIR}/${fqdn}.crt" || ! -f "${SSL_DIR}/${fqdn}.key" ]]; then
     openssl req -x509 -nodes -newkey rsa:4096 -days 3650 \
       -keyout "${SSL_DIR}/${fqdn}.key" \
       -out "${SSL_DIR}/${fqdn}.crt" \
-      -subj "/CN=${fqdn}" 2>/dev/null
+      -subj "/CN=${fqdn}" >/dev/null 2>&1
     chmod 600 "${SSL_DIR}/${fqdn}.key"
   fi
 done
 
-# Use LE certs if available, else self-signed
 CERT="${SSL_DIR}/${DOMAIN}.crt"
 KEY="${SSL_DIR}/${DOMAIN}.key"
 LE_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
 LE_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
 [[ -f "$LE_CERT" && -f "$LE_KEY" ]] && CERT="$LE_CERT" && KEY="$LE_KEY"
 
-# ── nginx.conf with stream block ───────────────────────────────────────────
+if [[ -f /usr/share/nginx/modules-available/mod-stream.conf ]]; then
+  ln -sf /usr/share/nginx/modules-available/mod-stream.conf /etc/nginx/modules-enabled/50-mod-stream.conf 2>/dev/null || true
+elif [[ -f /usr/lib/nginx/modules/ngx_stream_module.so ]]; then
+  echo "load_module /usr/lib/nginx/modules/ngx_stream_module.so;" > /etc/nginx/modules-enabled/50-mod-stream.conf
+fi
+
 cat > /etc/nginx/nginx.conf <<NGEOF
 user www-data;
 worker_processes auto;
@@ -60,13 +56,9 @@ http {
     include /etc/nginx/sites-enabled/*;
 }
 
-# Stream mux: SNI-route port 443
-# turn.DOMAIN → coturn TLS :5349 (passthrough)
-# everything else → nginx http :60443 (terminate)
 include /etc/nginx/stream.conf;
 NGEOF
 
-# ── stream.conf ────────────────────────────────────────────────────────────
 cat > /etc/nginx/stream.conf <<STEOF
 stream {
 
@@ -75,10 +67,10 @@ stream {
                             '\$session_time "\$ssl_preread_server_name"';
 
     access_log /var/log/nginx/stream.log stream_basic;
-
+    
     map \$ssl_preread_server_name \$stream_backend {
-        ${TURN} turn_backend;
-        default https_backend;
+        ${TURN}  turn_backend;
+        default  https_backend;
     }
 
     upstream https_backend {
@@ -95,13 +87,14 @@ stream {
         ssl_preread on;
     }
 
-    # Note: JVB binds directly to 10000/udp for media.
-    # If you forward port 10000/udp to this LXC, JVB handles it natively.
-    # No nginx stream proxy needed (and it would conflict with JVB).
+    # JVB media over UDP — mirrored from known-working PVE config
+    server {
+        listen 10000 udp;
+        proxy_pass ${LXC_IP}:10000;
+    }
 }
 STEOF
 
-# ── Main vhost: DOMAIN → Element Web + Synapse ────────────────────────────
 cat > /etc/nginx/sites-available/matrix <<MEOF
 server {
     listen 127.0.0.1:60443 ssl http2;
@@ -110,7 +103,6 @@ server {
     ssl_certificate     ${CERT};
     ssl_certificate_key ${KEY};
 
-    # Matrix Synapse
     location /_matrix {
         proxy_pass http://127.0.0.1:8008;
         proxy_set_header Host \$host;
@@ -128,7 +120,6 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
     }
 
-    # Element Web (catch-all — must be LAST)
     location / {
         root /var/www/element;
         index index.html;
@@ -143,12 +134,8 @@ server {
 }
 MEOF
 
-# Use /usr/share/element-web if Element is installed via apt
-if [[ -d "/usr/share/element-web" ]]; then
-  sed -i "s|root /var/www/element|root /usr/share/element-web|" /etc/nginx/sites-available/matrix
-fi
+[[ -d "/usr/share/element-web" ]] && sed -i "s|root /var/www/element|root /usr/share/element-web|" /etc/nginx/sites-available/matrix
 
-# ── Jitsi vhost: meet.DOMAIN ──────────────────────────────────────────────
 JITSI_ROOT="/usr/share/jitsi-meet"
 JITSI_CONFIG="/etc/jitsi/meet/${MEET}-config.js"
 
@@ -167,47 +154,55 @@ map \$arg_vnode \$prosody_node {
     default prosody;
 }
 map \$http_referer \$allowed_referer {
-    default              0;
-    "~*${DOMAIN//./\\.}" 1;
+    default                     0;
+    "~*${DOMAIN//./\\.}"     1;
 }
 server {
     listen 127.0.0.1:60443 ssl http2;
     server_name ${MEET};
-
     ssl_certificate     ${CERT};
     ssl_certificate_key ${KEY};
-
     set \$prefix "";
     set \$custom_index "";
     set \$config_js_location ${JITSI_CONFIG};
-
     root ${JITSI_ROOT};
     ssi on;
     ssi_types application/x-javascript application/javascript;
-    index index.html;
-
+    index index.html index.htm;
+    error_page 404 /static/404.html;
     gzip on;
     gzip_types text/plain text/css application/javascript application/json image/x-icon application/octet-stream application/wasm;
     gzip_vary on;
+    gzip_proxied no-cache no-store private expired auth;
+    gzip_min_length 512;
 
     location = / {
         if (\$allowed_referer = 0) { return 403; }
         try_files \$uri @root_path;
     }
-
     location ~ ^/[A-Za-z0-9]+\$ {
         if (\$allowed_referer = 0) { return 403; }
         try_files \$uri @root_path;
     }
-
-    location = /config.js { alias \$config_js_location; }
-    location = /external_api.js { alias ${JITSI_ROOT}/libs/external_api.min.js; }
-
+    location = /config.js {
+        alias \$config_js_location;
+    }
+    location = /external_api.js {
+        alias ${JITSI_ROOT}/libs/external_api.min.js;
+    }
+    location = /_api/room-info {
+        proxy_pass http://prosody/room-info?prefix=\$prefix&\$args;
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header Host \$http_host;
+    }
     location ~ ^/(libs|css|static|images|fonts|lang|sounds|.well-known)/(.*)\$ {
         add_header 'Access-Control-Allow-Origin' '*';
         alias ${JITSI_ROOT}/\$1/\$2;
+        if (\$arg_v) {
+            expires 1y;
+        }
     }
-
     location = /http-bind {
         proxy_pass http://\$prosody_node/http-bind?prefix=\$prefix&\$args;
         proxy_http_version 1.1;
@@ -215,7 +210,6 @@ server {
         proxy_set_header Host \$http_host;
         proxy_set_header Connection "";
     }
-
     location = /xmpp-websocket {
         proxy_pass http://\$prosody_node/xmpp-websocket?prefix=\$prefix&\$args;
         proxy_http_version 1.1;
@@ -224,7 +218,6 @@ server {
         proxy_set_header Host \$http_host;
         tcp_nodelay on;
     }
-
     location ~ ^/colibri-ws/default-id/(.*) {
         proxy_pass http://jvb1/colibri-ws/default-id/\$1\$is_args\$args;
         proxy_http_version 1.1;
@@ -232,32 +225,36 @@ server {
         proxy_set_header Connection "upgrade";
         tcp_nodelay on;
     }
-
+    location ~ ^/conference-request/v1(\/.*)?\$ {
+        proxy_pass http://127.0.0.1:8888/conference-request/v1\$1;
+        add_header "Cache-Control" "no-cache, no-store";
+        add_header 'Access-Control-Allow-Origin' '*';
+    }
+    location = /_unlock {
+        add_header 'Access-Control-Allow-Origin' '*';
+        add_header "Cache-Control" "no-cache, no-store";
+    }
     location @root_path {
         rewrite ^/(.*)\$ /\$custom_index break;
     }
-
     location ~ ^/([^/?&:'"]+)/xmpp-websocket {
         set \$subdomain "\$1.";
         set \$subdir "\$1/";
         set \$prefix "\$1";
         rewrite ^/(.*)\$ /xmpp-websocket;
     }
-
     location ~ ^/([^/?&:'"]+)/http-bind {
         set \$subdomain "\$1.";
         set \$subdir "\$1/";
         set \$prefix "\$1";
         rewrite ^/(.*)\$ /http-bind;
     }
-
     location ~ ^/([^/?&:'"]+)/(.*)\$ {
         set \$subdomain "\$1.";
         set \$subdir "\$1/";
         rewrite ^/([^/?&:'"]+)/(.*)\$ /\$2;
     }
 }
-
 server {
     listen 80;
     server_name ${MEET};
@@ -265,26 +262,13 @@ server {
 }
 JTEOF
 
-# Enable sites
 ln -sf /etc/nginx/sites-available/matrix /etc/nginx/sites-enabled/matrix
 ln -sf /etc/nginx/sites-available/meet   /etc/nginx/sites-enabled/meet
 
-# Ensure stream module is loaded
-mkdir -p /etc/nginx/modules-enabled
-if [[ -f /usr/share/nginx/modules-available/mod-stream.conf ]]; then
-  ln -sf /usr/share/nginx/modules-available/mod-stream.conf \
-    /etc/nginx/modules-enabled/50-mod-stream.conf 2>/dev/null || true
-elif [[ -f /usr/lib/nginx/modules/ngx_stream_module.so ]]; then
-  echo "load_module /usr/lib/nginx/modules/ngx_stream_module.so;" \
-    > /etc/nginx/modules-enabled/50-mod-stream.conf
-fi
-
 nginx -t || { echo "ERROR: nginx config test failed"; nginx -t; exit 1; }
-
 systemctl enable nginx
 systemctl restart nginx
 
-# Now that nginx is up, restart Jitsi services that depend on it
 echo "  Restarting Jitsi services (need nginx for websockets)..."
 systemctl restart jicofo 2>/dev/null || true
 systemctl restart jitsi-videobridge2 2>/dev/null || true
