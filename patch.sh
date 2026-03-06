@@ -15,8 +15,6 @@
 
 set -euo pipefail
 
-#WIP
-
 #!/bin/bash
 set -euo pipefail
 
