@@ -1,9 +1,25 @@
 #!/bin/bash
 ###############################################################################
 # Configure coturn — Matrix/Jitsi TURN server
+# Internal-only coturn behind nginx stream SNI mux on :443
 ###############################################################################
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
 echo "  Configuring coturn..."
+
+ENV_FILE="/root/matrix.env"
+[[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE"; exit 1; }
+
+set -a
+. "$ENV_FILE"
+set +a
+
+: "${DOMAIN:?Missing DOMAIN in matrix.env}"
+: "${TURN:?Missing TURN in matrix.env}"
+: "${TURN_SECRET:?Missing TURN_SECRET in matrix.env}"
+: "${LXC_IP:?Missing LXC_IP in matrix.env}"
+: "${EXTERNAL_IP:?Missing EXTERNAL_IP in matrix.env}"
 
 ###############################################################################
 # Ensure Prosody certs exist (prevents interactive prompts)
@@ -37,12 +53,11 @@ SS_CERT="/etc/ssl/nginx/${DOMAIN}.crt"
 SS_KEY="/etc/ssl/nginx/${DOMAIN}.key"
 
 ###############################################################################
-# Generate fallback self-signed cert for TURN
+# Generate fallback self-signed cert if LE is unavailable
 ###############################################################################
 
-if [[ ! -f "$LE_CERT" && ! -f "$SS_CERT" ]]; then
-  echo "  Generating self-signed TURN certificate..."
-
+if [[ ! -f "$LE_CERT" || ! -f "$LE_KEY" ]]; then
+  echo "  Let's Encrypt cert not found, generating fallback self-signed TURN cert..."
   mkdir -p /etc/ssl/nginx
 
   openssl req -x509 -nodes -newkey rsa:4096 -days 3650 \
@@ -55,40 +70,35 @@ if [[ ! -f "$LE_CERT" && ! -f "$SS_CERT" ]]; then
 fi
 
 ###############################################################################
-# Choose certificate source
+# Choose cert source
 ###############################################################################
 
 if [[ -f "$LE_CERT" && -f "$LE_KEY" ]]; then
-  CERT_LINE="cert=${LE_CERT}"
-  KEY_LINE="pkey=${LE_KEY}"
+  CERT_PATH="$LE_CERT"
+  KEY_PATH="$LE_KEY"
 else
-  CERT_LINE="cert=${SS_CERT}"
-  KEY_LINE="pkey=${SS_KEY}"
+  CERT_PATH="$SS_CERT"
+  KEY_PATH="$SS_KEY"
 fi
 
 ###############################################################################
-# External IP mapping
-###############################################################################
-
-EXT_MAP=""
-
-if [[ -n "${EXTERNAL_IP:-}" && "$EXTERNAL_IP" != "$LXC_IP" ]]; then
-  EXT_MAP="external-ip=${EXTERNAL_IP}/${LXC_IP}"
-fi
-
-###############################################################################
-# Ensure coturn log directory exists
+# Logging
 ###############################################################################
 
 mkdir -p /var/log/coturn
 touch /var/log/coturn/turn.log
-chown turnserver:turnserver /var/log/coturn/turn.log
+chown turnserver:turnserver /var/log/coturn /var/log/coturn/turn.log 2>/dev/null || true
 
 ###############################################################################
-# Write turnserver configuration
+# Write coturn config
+#
+# IMPORTANT:
+# - coturn binds only on loopback
+# - nginx stream.conf exposes TURN externally on :443 via SNI for ${TURN}
+# - Synapse must advertise turns:${TURN}:443?transport=tcp
 ###############################################################################
 
-cat > /etc/turnserver.conf <<TEOF
+cat > /etc/turnserver.conf <<EOF
 realm=${TURN}
 
 use-auth-secret
@@ -96,22 +106,22 @@ static-auth-secret=${TURN_SECRET}
 
 fingerprint
 
-listening-ip=0.0.0.0
+listening-ip=127.0.0.1
 relay-ip=${LXC_IP}
-${EXT_MAP}
+external-ip=${EXTERNAL_IP}/${LXC_IP}
 
-no-udp
 listening-port=3478
 tls-listening-port=5349
 
 min-port=49160
 max-port=49250
 
-${CERT_LINE}
-${KEY_LINE}
+cert=${CERT_PATH}
+pkey=${KEY_PATH}
 
 no-tlsv1
 no-tlsv1_1
+no-ipv6
 
 no-cli
 no-multicast-peers
@@ -120,7 +130,6 @@ no-loopback-peers
 stale-nonce=600
 total-quota=300
 
-# Block all private/reserved ranges (SSRF protection)
 denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
 denied-peer-ip=100.64.0.0-100.127.255.255
@@ -139,16 +148,21 @@ allowed-peer-ip=${LXC_IP}
 
 log-file=/var/log/coturn/turn.log
 verbose
-TEOF
+EOF
+
+chmod 640 /etc/turnserver.conf
+chown root:turnserver /etc/turnserver.conf 2>/dev/null || true
 
 ###############################################################################
-# Enable coturn service
+# Enable service
 ###############################################################################
 
-echo "TURNSERVER_ENABLED=1" > /etc/default/coturn
+cat > /etc/default/coturn <<EOF
+TURNSERVER_ENABLED=1
+EOF
 
 ###############################################################################
-# LetsEncrypt permissions hook
+# LetsEncrypt renewal hook
 ###############################################################################
 
 mkdir -p /etc/letsencrypt/renewal-hooks/post
@@ -166,10 +180,12 @@ HOOKEOF
 chmod +x /etc/letsencrypt/renewal-hooks/post/coturn-perms.sh
 
 ###############################################################################
-# Restart coturn
+# Start coturn
 ###############################################################################
 
+systemctl daemon-reload
 systemctl enable coturn
 systemctl restart coturn
 
 echo "  coturn configured."
+echo "  Expected external TURN path: turns://${TURN}:443?transport=tcp"
