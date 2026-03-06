@@ -1,6 +1,6 @@
 #!/bin/bash
 ###############################################################################
-# 05-jitsi-config.sh
+# 06-jitsi-config.sh
 # Configure Jitsi Meet from /root/matrix.env as the single source of truth.
 #
 # Owns:
