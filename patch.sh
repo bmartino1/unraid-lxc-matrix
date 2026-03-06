@@ -390,6 +390,10 @@ fi
 echo "[*] Reloading nginx..."
 systemctl reload nginx
 
+#small fix to nginx pthing matters:
+sed -i 's|root /usr/share/element-web;|root /var/www/element;|' /etc/nginx/sites-enabled/matrix
+nginx -t && systemctl reload nginx
+
 echo
 echo "[OK] Patch applied successfully."
 echo "[*] Backup saved at: ${BACKUP_DIR}"
