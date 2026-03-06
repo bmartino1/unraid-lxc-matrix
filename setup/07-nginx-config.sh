@@ -68,9 +68,12 @@ NGEOF
 # ── stream.conf ────────────────────────────────────────────────────────────
 cat > /etc/nginx/stream.conf <<STEOF
 stream {
-    map \$ssl_preread_server_name \$stream_backend {
-        ${TURN}    turn_backend;
-        default    https_backend;
+
+    access_log /var/log/nginx/stream.log;
+
+    map $ssl_preread_server_name $stream_backend {
+        ${TURN} turn_backend;
+        default https_backend;
     }
 
     upstream https_backend {
