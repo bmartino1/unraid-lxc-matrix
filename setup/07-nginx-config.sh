@@ -69,7 +69,12 @@ NGEOF
 # ── stream.conf ────────────────────────────────────────────────────────────
 cat > /etc/nginx/stream.conf <<STEOF
 stream {
-    access_log /var/log/nginx/stream.log;
+
+    log_format stream_basic '\$remote_addr [\$time_local] '
+                            '\$protocol \$status \$bytes_sent \$bytes_received '
+                            '\$session_time "\$ssl_preread_server_name"';
+
+    access_log /var/log/nginx/stream.log stream_basic;
 
     map \$ssl_preread_server_name \$stream_backend {
         ${TURN} turn_backend;
