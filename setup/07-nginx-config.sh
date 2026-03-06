@@ -120,7 +120,7 @@ EOF
 ###############################################################################
 # stream.conf
 # 443/tcp mux between TURN and HTTPS
-# 10000/udp proxies to local JVB
+# JVB owns 10000/udp directly — do NOT proxy it through nginx
 ###############################################################################
 
 cat > /etc/nginx/stream.conf <<EOF
@@ -149,11 +149,6 @@ stream {
         listen 443;
         proxy_pass \$stream_backend;
         ssl_preread on;
-    }
-
-    server {
-        listen 10000 udp;
-        proxy_pass ${LXC_IP}:10000;
     }
 }
 EOF
