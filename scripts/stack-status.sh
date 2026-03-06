@@ -1,3 +1,4 @@
+```bash
 #!/bin/bash
 # =============================================================================
 # scripts/stack-status.sh
@@ -30,6 +31,7 @@ set -a
 source /root/matrix.env
 set +a
 
+
 # ── Collect service status ────────────────────────────────────────────────────
 
 SERVICES=(nginx matrix-synapse postgresql valkey prosody jicofo jitsi-videobridge2 coturn)
@@ -40,19 +42,17 @@ for svc in "${SERVICES[@]}"; do
 done
 
 
-# ── Synapse health check ──────────────────────────────────────────────────────
-# Try metrics endpoint first (if enabled)
-SYNAPSE_HEALTH_CODE=$(curl -so /dev/null -w "%{http_code}" \
-  http://127.0.0.1:9000/health 2>/dev/null || echo "000")
+# ── Synapse health check (FIXED) ──────────────────────────────────────────────
 
-# Fallback to Matrix client API
-if [[ "$SYNAPSE_HEALTH_CODE" == "000" ]]; then
-  SYNAPSE_HEALTH_CODE=$(curl -so /dev/null -w "%{http_code}" \
-    "${SYNAPSE}/_matrix/client/versions" 2>/dev/null || echo "000")
+SYNAPSE_HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  "${SYNAPSE}/_matrix/client/versions")
+
+if [[ -z "$SYNAPSE_HEALTH_CODE" ]]; then
+  SYNAPSE_HEALTH_CODE="000"
 fi
 
 
-# ── Valkey health check ───────────────────────────────────────────────────────
+# ── Valkey health check (FIXED) ───────────────────────────────────────────────
 
 VALKEY_PING=$(valkey-cli -a "${VALKEY_PASS}" ping 2>/dev/null | grep -o PONG)
 
@@ -99,7 +99,8 @@ cert_expiry() {
   DAYS_LEFT=$(( ( $(date -d "$EXPIRY" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
 
   local ISSUER
-  ISSUER=$(openssl x509 -issuer -noout -in "$CERT" 2>/dev/null | grep -o "O=[^,/]*" | head -1 | cut -d= -f2)
+  ISSUER=$(openssl x509 -issuer -noout -in "$CERT" 2>/dev/null \
+    | grep -o "O=[^,/]*" | head -1 | cut -d= -f2)
 
   if [[ $DAYS_LEFT -lt 7 ]]; then
     echo "EXPIRES IN ${DAYS_LEFT}d ⚠ (${ISSUER})"
@@ -143,22 +144,29 @@ done
 
 header "Health"
 
-[[ "$SYNAPSE_HEALTH_CODE" == "200" ]] \
-  && echo -e "  ${GREEN}✓${NC} Synapse API:  HTTP ${SYNAPSE_HEALTH_CODE}" \
-  || echo -e "  ${RED}✗${NC} Synapse API:  HTTP ${SYNAPSE_HEALTH_CODE}"
+if [[ "$SYNAPSE_HEALTH_CODE" == "200" ]]; then
+  echo -e "  ${GREEN}✓${NC} Synapse API:  HTTP 200"
+else
+  echo -e "  ${RED}✗${NC} Synapse API:  HTTP ${SYNAPSE_HEALTH_CODE}"
+fi
 
-[[ "$VALKEY_PING" == "PONG" ]] \
-  && echo -e "  ${GREEN}✓${NC} Valkey:       PONG" \
-  || echo -e "  ${RED}✗${NC} Valkey:       ERROR"
+if [[ "$VALKEY_PING" == "PONG" ]]; then
+  echo -e "  ${GREEN}✓${NC} Valkey:       PONG"
+else
+  echo -e "  ${RED}✗${NC} Valkey:       ERROR"
+fi
 
-[[ "$PG_READY" == "ready" ]] \
-  && echo -e "  ${GREEN}✓${NC} PostgreSQL:   ready" \
-  || echo -e "  ${RED}✗${NC} PostgreSQL:   ${PG_READY}"
+if [[ "$PG_READY" == "ready" ]]; then
+  echo -e "  ${GREEN}✓${NC} PostgreSQL:   ready"
+else
+  echo -e "  ${RED}✗${NC} PostgreSQL:   ${PG_READY}"
+fi
 
 
 # ── Statistics ────────────────────────────────────────────────────────────────
 
 header "Statistics"
+
 echo -e "  Users:        ${USER_COUNT}"
 echo -e "  DB size:      ${DB_SIZE}"
 echo -e "  Media store:  ${MEDIA_SIZE}"
@@ -207,3 +215,4 @@ done
 echo ""
 echo -e "  ${BLUE}Setup date:${NC} ${SETUP_DATE:-unknown}"
 echo ""
+```
