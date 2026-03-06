@@ -1,6 +1,6 @@
 #!/bin/bash
 ###############################################################################
-# Configure Jitsi Meet — matches PVE working prosody/jicofo/jvb configs
+# Configure Jitsi Meet — stable version for Matrix LXC stack
 ###############################################################################
 set -euo pipefail
 
@@ -10,6 +10,8 @@ echo "  Configuring Jitsi Meet..."
 # Install required packages
 ###############################################################################
 
+apt update
+
 apt install -y \
   prosody \
   lua-inspect \
@@ -18,7 +20,7 @@ apt install -y \
   lua-sec \
   lua-socket
 
-# Prosody module path fix required by Jitsi
+# Prosody Lua path fix required by Jitsi
 ln -sf /usr/share/lua/5.3/inspect.lua /usr/lib/prosody/inspect.lua
 
 ###############################################################################
@@ -28,7 +30,7 @@ ln -sf /usr/share/lua/5.3/inspect.lua /usr/lib/prosody/inspect.lua
 grep -q "${MEET}" /etc/hosts || echo "127.0.0.1 ${MEET}" >> /etc/hosts
 
 ###############################################################################
-# Ensure required dirs exist
+# Ensure directories exist
 ###############################################################################
 
 mkdir -p /etc/prosody/conf.avail
@@ -39,7 +41,7 @@ mkdir -p /etc/jitsi/videobridge
 mkdir -p /var/log/jitsi
 
 ###############################################################################
-# Prosody configuration
+# Write Prosody configuration
 ###############################################################################
 
 PROSODY_CFG="/etc/prosody/conf.avail/${MEET}.cfg.lua"
@@ -74,7 +76,7 @@ VirtualHost "${MEET}"
     authentication = "jitsi-anonymous"
 
     ssl = {
-        key = "/etc/prosody/certs/${MEET}.key"
+        key = "/etc/prosody/certs/${MEET}.key",
         certificate = "/etc/prosody/certs/${MEET}.crt"
     }
 
@@ -120,7 +122,7 @@ VirtualHost "auth.${MEET}"
     authentication = "internal_hashed"
 
     ssl = {
-        key = "/etc/prosody/certs/auth.${MEET}.key"
+        key = "/etc/prosody/certs/auth.${MEET}.key",
         certificate = "/etc/prosody/certs/auth.${MEET}.crt"
     }
 
@@ -134,32 +136,35 @@ PCFG
 ln -sf "${PROSODY_CFG}" "/etc/prosody/conf.d/${MEET}.cfg.lua"
 
 ###############################################################################
-# Hybrid Prosody Certificate Generation
+# Generate Prosody certificates
 ###############################################################################
 
 for vhost in "${MEET}" "auth.${MEET}"; do
-  # Try official Prosody generation first
+
   prosodyctl cert generate "${vhost}" 2>/dev/null || true
 
-  # Move generated certs if Prosody created them
   mv "/var/lib/prosody/${vhost}.crt" "/etc/prosody/certs/" 2>/dev/null || true
   mv "/var/lib/prosody/${vhost}.key" "/etc/prosody/certs/" 2>/dev/null || true
-  mv "/var/lib/prosody/${vhost}.cnf" "/etc/prosody/certs/" 2>/dev/null || true
 
-  # Fallback to OpenSSL if still missing
-  if [[ ! -f "/etc/prosody/certs/${vhost}.crt" ]] || [[ ! -f "/etc/prosody/certs/${vhost}.key" ]]; then
-    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
-      -keyout "/etc/prosody/certs/${vhost}.key" \
-      -out "/etc/prosody/certs/${vhost}.crt" \
-      -subj "/CN=${vhost}" 2>/dev/null
+  if [[ ! -f "/etc/prosody/certs/${vhost}.crt" ]]; then
+      openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+        -keyout "/etc/prosody/certs/${vhost}.key" \
+        -out "/etc/prosody/certs/${vhost}.crt" \
+        -subj "/CN=${vhost}" 2>/dev/null
   fi
 
-  chown prosody:prosody "/etc/prosody/certs/${vhost}.crt" "/etc/prosody/certs/${vhost}.key" 2>/dev/null || true
-  chmod 640 "/etc/prosody/certs/${vhost}.crt" "/etc/prosody/certs/${vhost}.key" 2>/dev/null || true
+  chown prosody:prosody /etc/prosody/certs/${vhost}.*
+  chmod 640 /etc/prosody/certs/${vhost}.*
 done
 
-# Validate config before restart
-prosodyctl check config 2>/dev/null || true
+###############################################################################
+# Validate Prosody config before restart
+###############################################################################
+
+if ! prosodyctl check config ; then
+  echo "Prosody config invalid — aborting."
+  exit 1
+fi
 
 ###############################################################################
 # Restart Prosody
@@ -173,11 +178,11 @@ sleep 3
 # Register XMPP users
 ###############################################################################
 
-prosodyctl register focus "auth.${MEET}" "${JICOFO_PASS}" 2>/dev/null || true
-prosodyctl register jvb   "auth.${MEET}" "${JVB_PASS}"    2>/dev/null || true
+prosodyctl register focus auth.${MEET} "${JICOFO_PASS}" 2>/dev/null || true
+prosodyctl register jvb auth.${MEET} "${JVB_PASS}" 2>/dev/null || true
 
 ###############################################################################
-# Jicofo configuration
+# Configure Jicofo
 ###############################################################################
 
 cat > /etc/jitsi/jicofo/jicofo.conf <<JCEOF
@@ -198,16 +203,12 @@ jicofo {
 }
 JCEOF
 
-###############################################################################
-# Jicofo environment config
-###############################################################################
-
 cat > /etc/jitsi/jicofo/config <<'JCSEOF'
 JAVA_SYS_PROPS="-Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dnet.java.sip.communicator.SC_HOME_DIR_NAME=jicofo -Dnet.java.sip.communicator.SC_LOG_DIR_LOCATION=/var/log/jitsi -Djava.util.logging.config.file=/etc/jitsi/jicofo/logging.properties"
 JCSEOF
 
 ###############################################################################
-# Jitsi Videobridge configuration
+# Configure Jitsi Videobridge
 ###############################################################################
 
 cat > /etc/jitsi/videobridge/jvb.conf <<JVEOF
@@ -261,10 +262,6 @@ ice4j {
     }
 }
 JVEOF
-
-###############################################################################
-# JVB environment config
-###############################################################################
 
 cat > /etc/jitsi/videobridge/config <<JVSEOF
 JAVA_SYS_PROPS="-Dconfig.file=/etc/jitsi/videobridge/jvb.conf -Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dnet.java.sip.communicator.SC_HOME_DIR_NAME=videobridge -Dnet.java.sip.communicator.SC_LOG_DIR_LOCATION=/var/log/jitsi -Djava.util.logging.config.file=/etc/jitsi/videobridge/logging.properties"
