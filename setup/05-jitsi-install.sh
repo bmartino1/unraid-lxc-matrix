@@ -1,8 +1,10 @@
 #!/bin/bash
 ###############################################################################
 # 04-jitsi-install.sh
-# Install Jitsi packages using REAL env values, then wipe package-generated
-# config so 05 can rebuild everything from a single source of truth.
+# Install Jitsi packages using values from /root/matrix.env, then remove
+# package-generated Jitsi/Prosody state so 05 can rebuild from one source
+# of truth.
+#
 ###############################################################################
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -19,24 +21,39 @@ set +a
 : "${MEET:?Missing MEET in matrix.env}"
 
 JITSI_DOMAIN="${MEET}"
+JAVA_BIN="/usr/lib/jvm/java-17-openjdk-amd64/bin/java"
+JAVA_HOME_DIR="/usr/lib/jvm/java-17-openjdk-amd64"
 
 ###############################################################################
-# Java
+# Java + cert tooling
 ###############################################################################
 
 apt-get update
-apt-get install -y openjdk-17-jre-headless ca-certificates ca-certificates-java
+apt-get install -y \
+  openjdk-17-jre-headless \
+  ca-certificates \
+  ca-certificates-java \
+  debconf-utils \
+  apt-transport-https \
+  gnupg
 
-update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java 2>/dev/null || true
+update-alternatives --set java "$JAVA_BIN" 2>/dev/null || true
 
 if grep -q '^JAVA_HOME=' /etc/environment 2>/dev/null; then
-  sed -i 's|^JAVA_HOME=.*|JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64|' /etc/environment
+  sed -i "s|^JAVA_HOME=.*|JAVA_HOME=${JAVA_HOME_DIR}|" /etc/environment
 else
-  echo 'JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64' >> /etc/environment
+  echo "JAVA_HOME=${JAVA_HOME_DIR}" >> /etc/environment
 fi
 
 ###############################################################################
-# Preseed Jitsi packages with the REAL meet hostname
+# Ensure local hostname resolution for package postinst
+###############################################################################
+
+grep -qE "[[:space:]]${JITSI_DOMAIN}([[:space:]]|$)" /etc/hosts || \
+  echo "127.0.0.1 ${JITSI_DOMAIN}" >> /etc/hosts
+
+###############################################################################
+# Preseed Jitsi package install with REAL meet hostname
 ###############################################################################
 
 debconf-set-selections <<EOF
@@ -48,20 +65,13 @@ jitsi-meet-turnserver   jitsi-meet-turnserver/jvb-hostname        string ${JITSI
 EOF
 
 ###############################################################################
-# Make sure the real meet hostname resolves locally for package postinst
-###############################################################################
-
-grep -qE "[[:space:]]${JITSI_DOMAIN}([[:space:]]|\$)" /etc/hosts || \
-  echo "127.0.0.1 ${JITSI_DOMAIN}" >> /etc/hosts
-
-###############################################################################
 # Install Jitsi stack
 ###############################################################################
 
 apt-get install -y jitsi-meet
 
 ###############################################################################
-# Stop/disable services - 05 will fully regenerate config and re-enable
+# Stop all related services; later stages will re-enable in correct order
 ###############################################################################
 
 for svc in prosody jicofo jitsi-videobridge2 coturn; do
@@ -78,7 +88,8 @@ pkill -9 -f '/usr/bin/prosody' || true
 sleep 2
 
 ###############################################################################
-# Purge package-generated Jitsi state/config so 05 owns /etc
+# Purge package-generated Jitsi/Prosody config only
+# DO NOT touch nginx here; 07 owns nginx.
 ###############################################################################
 
 rm -f /etc/prosody/conf.d/*.cfg.lua || true
@@ -92,9 +103,6 @@ rm -f /etc/jitsi/videobridge/config \
       /etc/jitsi/videobridge/jvb.conf \
       /etc/jitsi/videobridge/sip-communicator.properties || true
 
-rm -f /etc/nginx/sites-enabled/meet \
-      /etc/nginx/sites-available/meet || true
-
 rm -f /usr/share/jitsi-meet/config.js || true
 rm -f /etc/jitsi/meet/*-config.js || true
 
@@ -102,9 +110,10 @@ rm -f /etc/prosody/conf.d/meet.placeholder.invalid.cfg.lua \
       /etc/prosody/conf.avail/meet.placeholder.invalid.cfg.lua || true
 
 find /etc/jitsi/meet -maxdepth 1 -type f -name '*placeholder.invalid*' -delete 2>/dev/null || true
+find /etc/prosody/certs -maxdepth 1 \( -name '*placeholder.invalid*' -o -name '*.cnf' \) -delete 2>/dev/null || true
 
 ###############################################################################
-# Recreate clean directories expected by 05
+# Recreate directories expected by 05
 ###############################################################################
 
 mkdir -p /etc/prosody/conf.avail
