@@ -1,6 +1,6 @@
 #!/bin/bash
 ###############################################################################
-# 04-jitsi-install.sh
+# 05-jitsi-install.sh
 # Install Jitsi packages using values from /root/matrix.env, then remove
 # package-generated Jitsi/Prosody state so 05 can rebuild from one source
 # of truth.
