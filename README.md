@@ -1,5 +1,7 @@
 # unraid-lxc-matrix
 
+Its ALive! :) see https://github.com/bmartino1/unraid-lxc-matrix/blob/main/WIP-Notes-Updates.txt    
+
 > **Self-hosted secure communications stack in a single Unraid LXC**
 >
 > Matrix Synapse · Element Web · Jitsi Meet · coturn · Nginx · PostgreSQL · Valkey
