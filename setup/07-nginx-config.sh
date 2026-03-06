@@ -114,10 +114,10 @@ stream {
     }
 
     # JVB media over UDP — mirrored from known-working baseline
-    server {
-        listen 10000 udp;
-        proxy_pass ${LXC_IP}:10000;
-    }
+#    server {
+#        listen 10000 udp;
+#        proxy_pass ${LXC_IP}:10000;
+#    }
 }
 STEOF
 
