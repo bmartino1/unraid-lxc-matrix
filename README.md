@@ -1,5 +1,3 @@
-# WIP
-
 # unraid-lxc-matrix
 
 > **Self-hosted secure communications stack in a single Unraid LXC**
@@ -386,7 +384,7 @@ Special thanks to:
 
 - **[ich777](https://github.com/ich777)** — for the [Unraid LXC plugin](https://forums.unraid.net/topic/123935-plugin-lxc-plugin/), pre-built container template patterns, and ongoing support
 - Structure modeled after [bmartino1/unraid-lxc-unifi](https://github.com/bmartino1/unraid-lxc-unifi)
-- **Adam (anonymous)** for initial assistance and information that helped shape the working direction
+- **Adam from (https://www.hax0rbana.org/)** for initial assistance and information that helped shape the working direction
 
 This project is licensed under the terms of the [LICENSE](./LICENSE) file in this repository.
 
