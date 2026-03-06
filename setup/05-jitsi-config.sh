@@ -118,30 +118,32 @@ PCFG
 ln -sf "${PROSODY_CFG}" "/etc/prosody/conf.d/${MEET}.cfg.lua"
 
 ###############################################################################
-# Generate Prosody certificates (required)
+# Hybrid Prosody Certificate Generation
 ###############################################################################
 
 mkdir -p /etc/prosody/certs
 
-# Generate prosody self-signed certs if missing
 for vhost in "${MEET}" "auth.${MEET}"; do
+
+  # Attempt official Prosody cert generation
+  prosodyctl cert generate "${vhost}" 2>/dev/null || true
+
+  # Move generated certs if they exist
+  mv "/var/lib/prosody/${vhost}.crt" "/etc/prosody/certs/" 2>/dev/null || true
+  mv "/var/lib/prosody/${vhost}.key" "/etc/prosody/certs/" 2>/dev/null || true
+
+  # Fallback to OpenSSL if still missing
   if [[ ! -f "/etc/prosody/certs/${vhost}.crt" ]]; then
     openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
       -keyout "/etc/prosody/certs/${vhost}.key" \
       -out "/etc/prosody/certs/${vhost}.crt" \
       -subj "/CN=${vhost}" 2>/dev/null
-    chown prosody:prosody "/etc/prosody/certs/${vhost}."* 2>/dev/null || true
   fi
+
+  chown prosody:prosody "/etc/prosody/certs/${vhost}."* 2>/dev/null || true
+  chmod 640 "/etc/prosody/certs/${vhost}."* 2>/dev/null || true
+
 done
-
-prosodyctl cert generate "${MEET}" 2>/dev/null || true
-prosodyctl cert generate "auth.${MEET}" 2>/dev/null || true
-
-mv /var/lib/prosody/${MEET}.* /etc/prosody/certs/ 2>/dev/null || true
-mv /var/lib/prosody/auth.${MEET}.* /etc/prosody/certs/ 2>/dev/null || true
-
-chown prosody:prosody /etc/prosody/certs/*
-chmod 640 /etc/prosody/certs/*
 
 ###############################################################################
 # Restart Prosody
@@ -189,7 +191,7 @@ JAVA_SYS_PROPS="-Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dne
 JCSEOF
 
 ###############################################################################
-# Jitsi Videobridge configuration (FIXED HOCON)
+# Jitsi Videobridge configuration
 ###############################################################################
 
 cat > /etc/jitsi/videobridge/jvb.conf <<JVEOF
