@@ -226,11 +226,6 @@ map \$arg_vnode \$prosody_node {
     default prosody;
 }
 
-map \$http_referer \$allowed_referer {
-    default                     0;
-    "~*${DOMAIN//./\\.}"        1;
-}
-
 server {
     listen 127.0.0.1:60443 ssl http2;
     server_name ${MEET};
@@ -255,12 +250,10 @@ server {
     gzip_min_length 512;
 
     location = / {
-        if (\$allowed_referer = 0) { return 403; }
         try_files \$uri @root_path;
     }
 
     location ~ ^/[A-Za-z0-9]+\$ {
-        if (\$allowed_referer = 0) { return 403; }
         try_files \$uri @root_path;
     }
 
@@ -279,8 +272,8 @@ server {
         proxy_set_header Host \$http_host;
     }
 
-    location ~ ^/(libs|css|static|images|fonts|lang|sounds|.well-known)/(.*)\$ {
-        add_header 'Access-Control-Allow-Origin' '*';
+    location ~ ^/(libs|css|static|images|fonts|lang|sounds|\.well-known)/(.*)\$ {
+        add_header Access-Control-Allow-Origin *;
         alias ${JITSI_ROOT}/\$1/\$2;
         if (\$arg_v) {
             expires 1y;
@@ -304,7 +297,7 @@ server {
         tcp_nodelay on;
     }
 
-    location ~ ^/colibri-ws/default-id/(.*) {
+    location ~ ^/colibri-ws/default-id/(.*)\$ {
         proxy_pass http://jvb1/colibri-ws/default-id/\$1\$is_args\$args;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -314,13 +307,13 @@ server {
 
     location ~ ^/conference-request/v1(\/.*)?\$ {
         proxy_pass http://127.0.0.1:8888/conference-request/v1\$1;
-        add_header "Cache-Control" "no-cache, no-store";
-        add_header 'Access-Control-Allow-Origin' '*';
+        add_header Cache-Control "no-cache, no-store";
+        add_header Access-Control-Allow-Origin *;
     }
 
     location = /_unlock {
-        add_header 'Access-Control-Allow-Origin' '*';
-        add_header "Cache-Control" "no-cache, no-store";
+        add_header Access-Control-Allow-Origin *;
+        add_header Cache-Control "no-cache, no-store";
     }
 
     location @root_path {
@@ -344,7 +337,7 @@ server {
     location ~ ^/([^/?&:'"]+)/(.*)\$ {
         set \$subdomain "\$1.";
         set \$subdir "\$1/";
-        rewrite ^/([^/?&:'"]+)/(.*)\$ /\$2;
+        rewrite ^/([^/?&:'"]+)/(.*)\$ /\$2 break;
     }
 }
 
