@@ -11,12 +11,12 @@ echo "  Configuring Jitsi Meet..."
 ###############################################################################
 
 apt install -y \
-prosody \
-lua-inspect \
-lua-basexx \
-lua-cjson \
-lua-sec \
-lua-socket
+  prosody \
+  lua-inspect \
+  lua-basexx \
+  lua-cjson \
+  lua-sec \
+  lua-socket
 
 # Prosody module path fix required by Jitsi
 ln -sf /usr/share/lua/5.3/inspect.lua /usr/lib/prosody/inspect.lua
@@ -26,6 +26,17 @@ ln -sf /usr/share/lua/5.3/inspect.lua /usr/lib/prosody/inspect.lua
 ###############################################################################
 
 grep -q "${MEET}" /etc/hosts || echo "127.0.0.1 ${MEET}" >> /etc/hosts
+
+###############################################################################
+# Ensure required dirs exist
+###############################################################################
+
+mkdir -p /etc/prosody/conf.avail
+mkdir -p /etc/prosody/conf.d
+mkdir -p /etc/prosody/certs
+mkdir -p /etc/jitsi/jicofo
+mkdir -p /etc/jitsi/videobridge
+mkdir -p /var/log/jitsi
 
 ###############################################################################
 # Prosody configuration
@@ -108,6 +119,11 @@ Component "internal.auth.${MEET}" "muc"
 VirtualHost "auth.${MEET}"
     authentication = "internal_hashed"
 
+    ssl = {
+        key = "/etc/prosody/certs/auth.${MEET}.key"
+        certificate = "/etc/prosody/certs/auth.${MEET}.crt"
+    }
+
 VirtualHost "recorder.${MEET}"
     authentication = "internal_hashed"
 
@@ -121,29 +137,29 @@ ln -sf "${PROSODY_CFG}" "/etc/prosody/conf.d/${MEET}.cfg.lua"
 # Hybrid Prosody Certificate Generation
 ###############################################################################
 
-mkdir -p /etc/prosody/certs
-
 for vhost in "${MEET}" "auth.${MEET}"; do
-
-  # Attempt official Prosody cert generation
+  # Try official Prosody generation first
   prosodyctl cert generate "${vhost}" 2>/dev/null || true
 
-  # Move generated certs if they exist
+  # Move generated certs if Prosody created them
   mv "/var/lib/prosody/${vhost}.crt" "/etc/prosody/certs/" 2>/dev/null || true
   mv "/var/lib/prosody/${vhost}.key" "/etc/prosody/certs/" 2>/dev/null || true
+  mv "/var/lib/prosody/${vhost}.cnf" "/etc/prosody/certs/" 2>/dev/null || true
 
   # Fallback to OpenSSL if still missing
-  if [[ ! -f "/etc/prosody/certs/${vhost}.crt" ]]; then
+  if [[ ! -f "/etc/prosody/certs/${vhost}.crt" ]] || [[ ! -f "/etc/prosody/certs/${vhost}.key" ]]; then
     openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
       -keyout "/etc/prosody/certs/${vhost}.key" \
       -out "/etc/prosody/certs/${vhost}.crt" \
       -subj "/CN=${vhost}" 2>/dev/null
   fi
 
-  chown prosody:prosody "/etc/prosody/certs/${vhost}."* 2>/dev/null || true
-  chmod 640 "/etc/prosody/certs/${vhost}."* 2>/dev/null || true
-
+  chown prosody:prosody "/etc/prosody/certs/${vhost}.crt" "/etc/prosody/certs/${vhost}.key" 2>/dev/null || true
+  chmod 640 "/etc/prosody/certs/${vhost}.crt" "/etc/prosody/certs/${vhost}.key" 2>/dev/null || true
 done
+
+# Validate config before restart
+prosodyctl check config 2>/dev/null || true
 
 ###############################################################################
 # Restart Prosody
@@ -217,7 +233,7 @@ videobridge {
                     username = "jvb"
                     password = "${JVB_PASS}"
                     muc_jids = "jvbbrewery@internal.auth.${MEET}"
-                    muc_nickname = "$(uuidgen 2>/dev/null || openssl rand -hex 8)"
+                    muc_nickname = "jvb-1"
                 }
             }
         }
@@ -254,7 +270,6 @@ cat > /etc/jitsi/videobridge/config <<JVSEOF
 JAVA_SYS_PROPS="-Dconfig.file=/etc/jitsi/videobridge/jvb.conf -Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dnet.java.sip.communicator.SC_HOME_DIR_NAME=videobridge -Dnet.java.sip.communicator.SC_LOG_DIR_LOCATION=/var/log/jitsi -Djava.util.logging.config.file=/etc/jitsi/videobridge/logging.properties"
 JVSEOF
 
-mkdir -p /var/log/jitsi
 chown jvb:jitsi /var/log/jitsi 2>/dev/null || true
 
 ###############################################################################
@@ -271,6 +286,8 @@ sleep 2
 systemctl restart jicofo
 sleep 2
 
-systemctl restart jitsi-videobridge2
+systemctl stop jitsi-videobridge2 2>/dev/null || true
+systemctl reset-failed jitsi-videobridge2 2>/dev/null || true
+systemctl start jitsi-videobridge2
 
 echo "  Jitsi Meet configured."
