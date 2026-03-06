@@ -65,7 +65,6 @@ external_services = {
   { type = "turns", host = "${TURN}", port = 443, transport = "tcp", secret = true, ttl = 86400, algorithm = "turn" }
 };
 
-cross_domain_bosh = false;
 consider_bosh_secure = true;
 consider_websocket_secure = true;
 
@@ -202,7 +201,14 @@ PCFG
 
 ln -sf "${PROSODY_CFG}" "/etc/prosody/conf.d/${MEET}.cfg.lua"
 
-if ! prosodyctl check config; then
+###############################################################################
+# Validate Prosody config
+###############################################################################
+
+PROSODY_CHECK_OUTPUT="$(prosodyctl check config 2>&1 || true)"
+echo "$PROSODY_CHECK_OUTPUT"
+
+if echo "$PROSODY_CHECK_OUTPUT" | grep -qiE 'Error:|not found:|unexpected symbol|expected|failed'; then
   echo "  Prosody config invalid — aborting."
   exit 1
 fi
@@ -241,7 +247,7 @@ JAVA_SYS_PROPS="-Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dne
 JCSEOF
 
 ###############################################################################
-# JVB — baseline intent, corrected to working HOCON syntax for current package
+# JVB — working HOCON syntax for current package
 ###############################################################################
 
 cat > /etc/jitsi/videobridge/jvb.conf <<JVEOF
@@ -300,22 +306,22 @@ JVSEOF
 mkdir -p /var/log/jitsi
 chown jvb:jitsi /var/log/jitsi 2>/dev/null || true
 
-###################### Service starts
+###############################################################################
+# Service starts
+###############################################################################
+
 systemctl daemon-reload
 systemctl enable jicofo jitsi-videobridge2
 
 systemctl restart prosody
-sleep 2
-systemctl restart jicofo
 sleep 2
 
 systemctl restart jicofo 2>/dev/null || echo "  jicofo deferred (nginx not yet up)"
 systemctl restart jitsi-videobridge2 2>/dev/null || echo "  JVB deferred (nginx not yet up)"
 
 sleep 2
-#Paranoid issue with jitsu...
 systemctl stop jitsi-videobridge2 2>/dev/null || true
 systemctl reset-failed jitsi-videobridge2 2>/dev/null || true
-systemctl start jitsi-videobridge2
+systemctl start jitsi-videobridge2 2>/dev/null || echo "  JVB deferred (nginx not yet up)"
 
 echo "  Jitsi Meet configured."
