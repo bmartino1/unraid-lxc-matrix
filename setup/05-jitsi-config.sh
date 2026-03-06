@@ -1,6 +1,6 @@
 #!/bin/bash
 ###############################################################################
-# Configure Jitsi Meet — stable version for Matrix LXC stack
+# Configure Jitsi Meet — unattended, internal-TLS-only Jitsi/Prosody setup
 ###############################################################################
 set -euo pipefail
 
@@ -11,7 +11,6 @@ echo "  Configuring Jitsi Meet..."
 ###############################################################################
 
 apt update
-
 apt install -y \
   prosody \
   lua-inspect \
@@ -20,7 +19,7 @@ apt install -y \
   lua-sec \
   lua-socket
 
-# Prosody Lua path fix required by Jitsi
+# Prosody Lua path fix required by Jitsi plugins
 ln -sf /usr/share/lua/5.3/inspect.lua /usr/lib/prosody/inspect.lua
 
 ###############################################################################
@@ -41,6 +40,27 @@ mkdir -p /etc/jitsi/videobridge
 mkdir -p /var/log/jitsi
 
 ###############################################################################
+# Generate internal Prosody certificates (NON-INTERACTIVE)
+# These are only for internal Jitsi/Prosody TLS. Public TLS is handled by nginx.
+###############################################################################
+
+for vhost in "${MEET}" "auth.${MEET}"; do
+  CRT="/etc/prosody/certs/${vhost}.crt"
+  KEY="/etc/prosody/certs/${vhost}.key"
+
+  if [[ ! -f "$CRT" || ! -f "$KEY" ]]; then
+    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+      -keyout "$KEY" \
+      -out "$CRT" \
+      -subj "/CN=${vhost}" \
+      >/dev/null 2>&1
+  fi
+
+  chown prosody:prosody "$CRT" "$KEY" 2>/dev/null || true
+  chmod 640 "$CRT" "$KEY" 2>/dev/null || true
+done
+
+###############################################################################
 # Write Prosody configuration
 ###############################################################################
 
@@ -49,36 +69,35 @@ PROSODY_CFG="/etc/prosody/conf.avail/${MEET}.cfg.lua"
 cat > "${PROSODY_CFG}" <<PCFG
 -- Prosody config for ${MEET}
 
-component_admins_as_room_owners = true
-plugin_paths = { "/usr/share/jitsi-meet/prosody-plugins/" }
+component_admins_as_room_owners = true;
+plugin_paths = { "/usr/share/jitsi-meet/prosody-plugins/" };
 
-muc_mapper_domain_base = "${MEET}"
+muc_mapper_domain_base = "${MEET}";
 
-external_service_secret = "${TURN_SECRET}"
+external_service_secret = "${TURN_SECRET}";
 external_services = {
-  { type = "turns", host = "${TURN}", port = 443, transport = "tcp", secret = true, ttl = 86400, algorithm = "turn" }
-}
+  { type = "turns", host = "${TURN}", port = 443, transport = "tcp", secret = true, ttl = 86400, algorithm = "turn" };
+};
 
-cross_domain_bosh = false
-consider_bosh_secure = true
-consider_websocket_secure = true
+consider_bosh_secure = true;
+consider_websocket_secure = true;
 
 ssl = {
-    protocol = "tlsv1_2+"
-}
+    protocol = "tlsv1_2+";
+};
 
 unlimited_jids = {
-    "focus@auth.${MEET}",
-    "jvb@auth.${MEET}"
-}
+    "focus@auth.${MEET}";
+    "jvb@auth.${MEET}";
+};
 
 VirtualHost "${MEET}"
-    authentication = "jitsi-anonymous"
+    authentication = "jitsi-anonymous";
 
     ssl = {
-        key = "/etc/prosody/certs/${MEET}.key",
-        certificate = "/etc/prosody/certs/${MEET}.crt"
-    }
+        key = "/etc/prosody/certs/${MEET}.key";
+        certificate = "/etc/prosody/certs/${MEET}.crt";
+    };
 
     modules_enabled = {
         "bosh";
@@ -89,80 +108,58 @@ VirtualHost "${MEET}"
         "conference_duration";
         "muc_lobby_rooms";
         "muc_breakout_rooms";
-    }
+    };
 
-    c2s_require_encryption = false
+    c2s_require_encryption = false;
 
-    lobby_muc = "lobby.${MEET}"
-    breakout_rooms_muc = "breakout.${MEET}"
-    main_muc = "conference.${MEET}"
+    lobby_muc = "lobby.${MEET}";
+    breakout_rooms_muc = "breakout.${MEET}";
+    main_muc = "conference.${MEET}";
 
 Component "conference.${MEET}" "muc"
-    restrict_room_creation = true
-    storage = "memory"
+    restrict_room_creation = true;
+    storage = "memory";
     modules_enabled = {
         "muc_hide_all";
         "muc_meeting_id";
         "muc_domain_mapper";
         -- "token_verification";
         "muc_rate_limit";
-    }
-    admins = { "focus@auth.${MEET}" }
+    };
+    admins = { "focus@auth.${MEET}" };
 
 Component "breakout.${MEET}" "muc"
-    storage = "memory"
-    restrict_room_creation = true
+    storage = "memory";
+    restrict_room_creation = true;
 
 Component "internal.auth.${MEET}" "muc"
-    storage = "memory"
-    modules_enabled = { "muc_hide_all"; "ping"; }
-    admins = { "focus@auth.${MEET}", "jvb@auth.${MEET}" }
+    storage = "memory";
+    modules_enabled = { "muc_hide_all"; "ping"; };
+    admins = { "focus@auth.${MEET}"; "jvb@auth.${MEET}"; };
 
 VirtualHost "auth.${MEET}"
-    authentication = "internal_hashed"
+    authentication = "internal_hashed";
 
     ssl = {
-        key = "/etc/prosody/certs/auth.${MEET}.key",
-        certificate = "/etc/prosody/certs/auth.${MEET}.crt"
-    }
+        key = "/etc/prosody/certs/auth.${MEET}.key";
+        certificate = "/etc/prosody/certs/auth.${MEET}.crt";
+    };
 
 VirtualHost "recorder.${MEET}"
-    authentication = "internal_hashed"
+    authentication = "internal_hashed";
 
 Component "focus.${MEET}" "client_proxy"
-    target_address = "focus@auth.${MEET}"
+    target_address = "focus@auth.${MEET}";
 PCFG
 
 ln -sf "${PROSODY_CFG}" "/etc/prosody/conf.d/${MEET}.cfg.lua"
 
 ###############################################################################
-# Generate Prosody certificates
-###############################################################################
-
-for vhost in "${MEET}" "auth.${MEET}"; do
-
-  prosodyctl cert generate "${vhost}" 2>/dev/null || true
-
-  mv "/var/lib/prosody/${vhost}.crt" "/etc/prosody/certs/" 2>/dev/null || true
-  mv "/var/lib/prosody/${vhost}.key" "/etc/prosody/certs/" 2>/dev/null || true
-
-  if [[ ! -f "/etc/prosody/certs/${vhost}.crt" ]]; then
-      openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
-        -keyout "/etc/prosody/certs/${vhost}.key" \
-        -out "/etc/prosody/certs/${vhost}.crt" \
-        -subj "/CN=${vhost}" 2>/dev/null
-  fi
-
-  chown prosody:prosody /etc/prosody/certs/${vhost}.*
-  chmod 640 /etc/prosody/certs/${vhost}.*
-done
-
-###############################################################################
 # Validate Prosody config before restart
 ###############################################################################
 
-if ! prosodyctl check config ; then
-  echo "Prosody config invalid — aborting."
+if ! prosodyctl check config; then
+  echo "  Prosody config invalid — aborting."
   exit 1
 fi
 
@@ -178,8 +175,8 @@ sleep 3
 # Register XMPP users
 ###############################################################################
 
-prosodyctl register focus auth.${MEET} "${JICOFO_PASS}" 2>/dev/null || true
-prosodyctl register jvb auth.${MEET} "${JVB_PASS}" 2>/dev/null || true
+prosodyctl register focus "auth.${MEET}" "${JICOFO_PASS}" 2>/dev/null || true
+prosodyctl register jvb   "auth.${MEET}" "${JVB_PASS}"    2>/dev/null || true
 
 ###############################################################################
 # Configure Jicofo
@@ -274,7 +271,6 @@ chown jvb:jitsi /var/log/jitsi 2>/dev/null || true
 ###############################################################################
 
 systemctl daemon-reload
-
 systemctl enable jicofo jitsi-videobridge2
 
 systemctl restart prosody
