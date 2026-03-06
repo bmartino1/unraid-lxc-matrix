@@ -25,6 +25,8 @@ set +a
 # Ensure Prosody certs exist (prevents interactive prompts)
 ###############################################################################
 
+mkdir -p /etc/prosody/certs/
+
 for vhost in "${MEET}" "auth.${MEET}"; do
   CRT="/etc/prosody/certs/${vhost}.crt"
   KEY="/etc/prosody/certs/${vhost}.key"
