@@ -85,7 +85,8 @@ denied-peer-ip=240.0.0.0-255.255.255.255
 allowed-peer-ip=127.0.0.1
 allowed-peer-ip=${LXC_IP}
 
-log-file=stdout
+#log-file=stdout
+log-file=/var/log/coturn/turn.log
 verbose
 TEOF
 
