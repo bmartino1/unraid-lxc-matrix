@@ -1,7 +1,6 @@
 #!/bin/bash
 ###############################################################################
-# Configure Jitsi Meet — mirrors known-working PVE /etc configs, adapted for
-# unattended domain-based setup in the Unraid LXC template.
+# Configure Jitsi Meet — mirrors known-working baseline /etc layout
 ###############################################################################
 set -euo pipefail
 
@@ -16,35 +15,47 @@ apt install -y \
   lua-sec \
   lua-socket
 
-# Prosody Lua path fix required by Jitsi plugins
 ln -sf /usr/share/lua/5.3/inspect.lua /usr/lib/prosody/inspect.lua
 
-# Ensure hostname resolution
 grep -q "${MEET}" /etc/hosts || echo "127.0.0.1 ${MEET}" >> /etc/hosts
 
-mkdir -p /etc/prosody/conf.avail /etc/prosody/conf.d /etc/prosody/certs
-mkdir -p /etc/jitsi/jicofo /etc/jitsi/videobridge /etc/jitsi/meet
+mkdir -p /etc/prosody/conf.avail
+mkdir -p /etc/prosody/conf.d
+mkdir -p /etc/prosody/certs
+mkdir -p /etc/jitsi/jicofo
+mkdir -p /etc/jitsi/videobridge
 mkdir -p /var/log/jitsi
 
-# Internal Prosody certs only. Public TLS is handled by nginx.
+###############################################################################
+# Internal Prosody certs — NON-INTERACTIVE
+###############################################################################
+
 for vhost in "${MEET}" "auth.${MEET}"; do
-  crt="/etc/prosody/certs/${vhost}.crt"
-  key="/etc/prosody/certs/${vhost}.key"
-  if [[ ! -f "$crt" || ! -f "$key" ]]; then
+  CRT="/etc/prosody/certs/${vhost}.crt"
+  KEY="/etc/prosody/certs/${vhost}.key"
+
+  if [[ ! -f "$CRT" || ! -f "$KEY" ]]; then
     openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
-      -keyout "$key" \
-      -out "$crt" \
-      -subj "/CN=${vhost}" >/dev/null 2>&1
+      -keyout "$KEY" \
+      -out "$CRT" \
+      -subj "/CN=${vhost}" \
+      >/dev/null 2>&1
   fi
-  chown prosody:prosody "$crt" "$key" 2>/dev/null || true
-  chmod 640 "$crt" "$key" 2>/dev/null || true
+
+  chown prosody:prosody "$CRT" "$KEY" 2>/dev/null || true
+  chmod 640 "$CRT" "$KEY" 2>/dev/null || true
 done
 
+###############################################################################
+# Prosody config — baseline layout, token_verification disabled for current flow
+###############################################################################
+
 PROSODY_CFG="/etc/prosody/conf.avail/${MEET}.cfg.lua"
-cat > "$PROSODY_CFG" <<PCFG
--- Mirrors known-working PVE config, adapted for \
--- ${MEET} / ${TURN}
+
+cat > "${PROSODY_CFG}" <<PCFG
+-- We need this for prosody 13.0
 component_admins_as_room_owners = true
+
 plugin_paths = { "/usr/share/jitsi-meet/prosody-plugins/" }
 
 muc_mapper_domain_base = "${MEET}";
@@ -109,7 +120,9 @@ Component "conference.${MEET}" "muc"
         "muc_password_whitelist";
     }
     admins = { "focus@auth.${MEET}" }
-    muc_password_whitelist = { "focus@auth.${MEET}" }
+    muc_password_whitelist = {
+        "focus@auth.${MEET}"
+    }
     muc_room_locking = false
     muc_room_default_public_jids = true
 
@@ -128,7 +141,10 @@ Component "breakout.${MEET}" "muc"
 
 Component "internal.auth.${MEET}" "muc"
     storage = "memory"
-    modules_enabled = { "muc_hide_all"; "ping"; }
+    modules_enabled = {
+        "muc_hide_all";
+        "ping";
+    }
     admins = { "focus@auth.${MEET}", "jvb@auth.${MEET}" }
     muc_room_locking = false
     muc_room_default_public_jids = true
@@ -138,12 +154,17 @@ VirtualHost "auth.${MEET}"
         key = "/etc/prosody/certs/auth.${MEET}.key";
         certificate = "/etc/prosody/certs/auth.${MEET}.crt";
     }
-    modules_enabled = { "limits_exception"; "smacks"; }
+    modules_enabled = {
+        "limits_exception";
+        "smacks";
+    }
     authentication = "internal_hashed"
     smacks_hibernation_time = 15;
 
 VirtualHost "recorder.${MEET}"
-    modules_enabled = { "smacks"; }
+    modules_enabled = {
+      "smacks";
+    }
     authentication = "internal_hashed"
     smacks_max_old_sessions = 2000;
 
@@ -164,7 +185,10 @@ Component "lobby.${MEET}" "muc"
     restrict_room_creation = true
     muc_room_locking = false
     muc_room_default_public_jids = true
-    modules_enabled = { "muc_hide_all"; "muc_rate_limit"; }
+    modules_enabled = {
+        "muc_hide_all";
+        "muc_rate_limit";
+    }
 
 Component "filesharing.${MEET}" "filesharing_component"
     muc_component = "conference.${MEET}"
@@ -176,7 +200,7 @@ Component "metadata.${MEET}" "room_metadata_component"
 Component "polls.${MEET}" "polls_component"
 PCFG
 
-ln -sf "$PROSODY_CFG" "/etc/prosody/conf.d/${MEET}.cfg.lua"
+ln -sf "${PROSODY_CFG}" "/etc/prosody/conf.d/${MEET}.cfg.lua"
 
 if ! prosodyctl check config; then
   echo "  Prosody config invalid — aborting."
@@ -189,6 +213,10 @@ sleep 3
 
 prosodyctl register focus "auth.${MEET}" "${JICOFO_PASS}" 2>/dev/null || true
 prosodyctl register jvb   "auth.${MEET}" "${JVB_PASS}"    2>/dev/null || true
+
+###############################################################################
+# Jicofo — baseline structure
+###############################################################################
 
 cat > /etc/jitsi/jicofo/jicofo.conf <<JCEOF
 jicofo {
@@ -212,6 +240,10 @@ cat > /etc/jitsi/jicofo/config <<'JCSEOF'
 JAVA_SYS_PROPS="-Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dnet.java.sip.communicator.SC_HOME_DIR_NAME=jicofo -Dnet.java.sip.communicator.SC_LOG_DIR_LOCATION=/var/log/jitsi -Djava.util.logging.config.file=/etc/jitsi/jicofo/logging.properties"
 JCSEOF
 
+###############################################################################
+# JVB — baseline intent, corrected to working HOCON syntax for current package
+###############################################################################
+
 cat > /etc/jitsi/videobridge/jvb.conf <<JVEOF
 videobridge {
     http-servers {
@@ -219,13 +251,11 @@ videobridge {
             port = 9090
         }
     }
-
     websockets {
         enabled = true
         domain = "${MEET}:443"
         tls = true
     }
-
     apis {
         xmpp-client {
             configs {
@@ -241,11 +271,12 @@ videobridge {
         }
     }
 }
-
 ice4j {
     harvest {
         mapping {
-            aws { enabled = false }
+            aws {
+                enabled = false
+            }
             stun {
                 enabled = false
                 addresses = []
@@ -262,42 +293,27 @@ ice4j {
 }
 JVEOF
 
-cat > /etc/jitsi/videobridge/config <<'JVSEOF'
+cat > /etc/jitsi/videobridge/config <<JVSEOF
 JAVA_SYS_PROPS="-Dconfig.file=/etc/jitsi/videobridge/jvb.conf -Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dnet.java.sip.communicator.SC_HOME_DIR_NAME=videobridge -Dnet.java.sip.communicator.SC_LOG_DIR_LOCATION=/var/log/jitsi -Djava.util.logging.config.file=/etc/jitsi/videobridge/logging.properties"
 JVSEOF
 
-JITSI_CONFIG="/etc/jitsi/meet/${MEET}-config.js"
-cat > "$JITSI_CONFIG" <<JMEOF
-var config = {
-    hosts: {
-        domain: '${MEET}',
-        muc: 'conference.${MEET}',
-    },
-    bosh: 'https://${MEET}/http-bind',
-    websocket: 'wss://${MEET}/xmpp-websocket',
-    enableWelcomePage: false,
-    enableClosePage: false,
-    enableNoisyMicDetection: true,
-    enableNoAudioDetection: true,
-    channelLastN: -1,
-    p2p: {
-        enabled: true,
-        stunServers: [
-            { urls: 'stun:meet-jit-si-turnrelay.jitsi.net:443' },
-        ],
-    },
-    analytics: {},
-};
-JMEOF
-
+mkdir -p /var/log/jitsi
 chown jvb:jitsi /var/log/jitsi 2>/dev/null || true
 
+###################### Service starts
 systemctl daemon-reload
 systemctl enable jicofo jitsi-videobridge2
+
 systemctl restart prosody
 sleep 2
 systemctl restart jicofo
 sleep 2
+
+systemctl restart jicofo 2>/dev/null || echo "  jicofo deferred (nginx not yet up)"
+systemctl restart jitsi-videobridge2 2>/dev/null || echo "  JVB deferred (nginx not yet up)"
+
+sleep 2
+#Paranoid issue with jitsu...
 systemctl stop jitsi-videobridge2 2>/dev/null || true
 systemctl reset-failed jitsi-videobridge2 2>/dev/null || true
 systemctl start jitsi-videobridge2
