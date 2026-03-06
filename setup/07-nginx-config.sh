@@ -21,7 +21,8 @@ SSL_DIR="/etc/ssl/nginx"
 for fqdn in "${DOMAIN}" "${MEET}"; do
   if [[ ! -f "${SSL_DIR}/${fqdn}.crt" ]]; then
     openssl req -x509 -nodes -newkey rsa:4096 -days 3650 \
-      -keyout "${SSL_DIR}/${fqdn}.key" -out "${SSL_DIR}/${fqdn}.crt" \
+      -keyout "${SSL_DIR}/${fqdn}.key" \
+      -out "${SSL_DIR}/${fqdn}.crt" \
       -subj "/CN=${fqdn}" 2>/dev/null
     chmod 600 "${SSL_DIR}/${fqdn}.key"
   fi
@@ -32,9 +33,9 @@ CERT="${SSL_DIR}/${DOMAIN}.crt"
 KEY="${SSL_DIR}/${DOMAIN}.key"
 LE_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
 LE_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
-[[ -f "$LE_CERT" ]] && CERT="$LE_CERT" && KEY="$LE_KEY"
+[[ -f "$LE_CERT" && -f "$LE_KEY" ]] && CERT="$LE_CERT" && KEY="$LE_KEY"
 
-# ── nginx.conf with stream block (matching PVE) ───────────────────────────
+# ── nginx.conf with stream block ───────────────────────────────────────────
 cat > /etc/nginx/nginx.conf <<NGEOF
 user www-data;
 worker_processes auto;
@@ -68,10 +69,9 @@ NGEOF
 # ── stream.conf ────────────────────────────────────────────────────────────
 cat > /etc/nginx/stream.conf <<STEOF
 stream {
-
     access_log /var/log/nginx/stream.log;
 
-    map $ssl_preread_server_name $stream_backend {
+    map \$ssl_preread_server_name \$stream_backend {
         ${TURN} turn_backend;
         default https_backend;
     }
@@ -123,8 +123,6 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
     }
 
-    # .well-known is served by Synapse (serve_server_wellknown: true)
-
     # Element Web (catch-all — must be LAST)
     location / {
         root /var/www/element;
@@ -141,9 +139,9 @@ server {
 MEOF
 
 # Use /usr/share/element-web if Element is installed via apt
-ELEMENT_ROOT="/var/www/element"
-[[ -d "/usr/share/element-web" ]] && \
+if [[ -d "/usr/share/element-web" ]]; then
   sed -i "s|root /var/www/element|root /usr/share/element-web|" /etc/nginx/sites-available/matrix
+fi
 
 # ── Jitsi vhost: meet.DOMAIN ──────────────────────────────────────────────
 JITSI_ROOT="/usr/share/jitsi-meet"
@@ -164,12 +162,13 @@ map \$arg_vnode \$prosody_node {
     default prosody;
 }
 map \$http_referer \$allowed_referer {
-    default                     0;
-    "~*${DOMAIN//./\\.}"        1;
+    default              0;
+    "~*${DOMAIN//./\\.}" 1;
 }
 server {
     listen 127.0.0.1:60443 ssl http2;
     server_name ${MEET};
+
     ssl_certificate     ${CERT};
     ssl_certificate_key ${KEY};
 
@@ -190,16 +189,20 @@ server {
         if (\$allowed_referer = 0) { return 403; }
         try_files \$uri @root_path;
     }
+
     location ~ ^/[A-Za-z0-9]+\$ {
         if (\$allowed_referer = 0) { return 403; }
         try_files \$uri @root_path;
     }
+
     location = /config.js { alias \$config_js_location; }
     location = /external_api.js { alias ${JITSI_ROOT}/libs/external_api.min.js; }
+
     location ~ ^/(libs|css|static|images|fonts|lang|sounds|.well-known)/(.*)\$ {
         add_header 'Access-Control-Allow-Origin' '*';
         alias ${JITSI_ROOT}/\$1/\$2;
     }
+
     location = /http-bind {
         proxy_pass http://\$prosody_node/http-bind?prefix=\$prefix&\$args;
         proxy_http_version 1.1;
@@ -207,6 +210,7 @@ server {
         proxy_set_header Host \$http_host;
         proxy_set_header Connection "";
     }
+
     location = /xmpp-websocket {
         proxy_pass http://\$prosody_node/xmpp-websocket?prefix=\$prefix&\$args;
         proxy_http_version 1.1;
@@ -215,6 +219,7 @@ server {
         proxy_set_header Host \$http_host;
         tcp_nodelay on;
     }
+
     location ~ ^/colibri-ws/default-id/(.*) {
         proxy_pass http://jvb1/colibri-ws/default-id/\$1\$is_args\$args;
         proxy_http_version 1.1;
@@ -222,20 +227,32 @@ server {
         proxy_set_header Connection "upgrade";
         tcp_nodelay on;
     }
-    location @root_path { rewrite ^/(.*)\$ /\$custom_index break; }
+
+    location @root_path {
+        rewrite ^/(.*)\$ /\$custom_index break;
+    }
+
     location ~ ^/([^/?&:'"]+)/xmpp-websocket {
-        set \$subdomain "\$1."; set \$subdir "\$1/"; set \$prefix "\$1";
+        set \$subdomain "\$1.";
+        set \$subdir "\$1/";
+        set \$prefix "\$1";
         rewrite ^/(.*)\$ /xmpp-websocket;
     }
+
     location ~ ^/([^/?&:'"]+)/http-bind {
-        set \$subdomain "\$1."; set \$subdir "\$1/"; set \$prefix "\$1";
+        set \$subdomain "\$1.";
+        set \$subdir "\$1/";
+        set \$prefix "\$1";
         rewrite ^/(.*)\$ /http-bind;
     }
+
     location ~ ^/([^/?&:'"]+)/(.*)\$ {
-        set \$subdomain "\$1."; set \$subdir "\$1/";
+        set \$subdomain "\$1.";
+        set \$subdir "\$1/";
         rewrite ^/([^/?&:'"]+)/(.*)\$ /\$2;
     }
 }
+
 server {
     listen 80;
     server_name ${MEET};
@@ -249,13 +266,16 @@ ln -sf /etc/nginx/sites-available/meet   /etc/nginx/sites-enabled/meet
 
 # Ensure stream module is loaded
 mkdir -p /etc/nginx/modules-enabled
-[[ -f /usr/share/nginx/modules-available/mod-stream.conf ]] && \
-  ln -sf /usr/share/nginx/modules-available/mod-stream.conf /etc/nginx/modules-enabled/50-mod-stream.conf 2>/dev/null || true
-# Also try the standard path
-[[ -f /usr/lib/nginx/modules/ngx_stream_module.so ]] && \
-  echo "load_module /usr/lib/nginx/modules/ngx_stream_module.so;" > /etc/nginx/modules-enabled/50-mod-stream.conf 2>/dev/null || true
+if [[ -f /usr/share/nginx/modules-available/mod-stream.conf ]]; then
+  ln -sf /usr/share/nginx/modules-available/mod-stream.conf \
+    /etc/nginx/modules-enabled/50-mod-stream.conf 2>/dev/null || true
+elif [[ -f /usr/lib/nginx/modules/ngx_stream_module.so ]]; then
+  echo "load_module /usr/lib/nginx/modules/ngx_stream_module.so;" \
+    > /etc/nginx/modules-enabled/50-mod-stream.conf
+fi
 
 nginx -t || { echo "ERROR: nginx config test failed"; nginx -t; exit 1; }
+
 systemctl enable nginx
 systemctl restart nginx
 
