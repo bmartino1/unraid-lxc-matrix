@@ -17,7 +17,8 @@ apt-get install -y --no-install-recommends \
   python3 python3-pip python3-venv python3-dev \
   build-essential git jq \
   certbot python3-certbot-nginx \
-  iproute2 procps mc lua-inspect
+  iproute2 procps mc \
+  lua-inspect lua-basexx lua-cjson lua-sec lua-socket
 
 echo "==> [01] Installing Nginx with stream module..."
 apt-get install -y nginx libnginx-mod-stream
