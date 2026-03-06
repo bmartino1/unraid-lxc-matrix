@@ -3,33 +3,55 @@
 # Configure Jitsi Meet — matches PVE working prosody/jicofo/jvb configs
 ###############################################################################
 set -euo pipefail
+
 echo "  Configuring Jitsi Meet..."
 
+###############################################################################
+# Install required packages
+###############################################################################
+
+apt install -y \
+prosody \
+lua-inspect \
+lua-basexx \
+lua-cjson \
+lua-sec \
+lua-socket
+
+# Prosody module path fix required by Jitsi
+ln -sf /usr/share/lua/5.3/inspect.lua /usr/lib/prosody/inspect.lua
+
+###############################################################################
 # Ensure hostname resolution
+###############################################################################
+
 grep -q "${MEET}" /etc/hosts || echo "127.0.0.1 ${MEET}" >> /etc/hosts
 
-# ── Prosody — full config matching PVE ─────────────────────────────────────
+###############################################################################
+# Prosody configuration
+###############################################################################
+
 PROSODY_CFG="/etc/prosody/conf.avail/${MEET}.cfg.lua"
+
 cat > "${PROSODY_CFG}" <<PCFG
--- Prosody config for ${MEET} — matches PVE production
+-- Prosody config for ${MEET}
+
 component_admins_as_room_owners = true
 plugin_paths = { "/usr/share/jitsi-meet/prosody-plugins/" }
 
-muc_mapper_domain_base = "${MEET}";
+muc_mapper_domain_base = "${MEET}"
 
--- TURN service announcement (clients told to use this)
-external_service_secret = "${TURN_SECRET}";
+external_service_secret = "${TURN_SECRET}"
 external_services = {
   { type = "turns", host = "${TURN}", port = 443, transport = "tcp", secret = true, ttl = 86400, algorithm = "turn" }
-};
+}
 
-cross_domain_bosh = false;
-consider_bosh_secure = true;
-consider_websocket_secure = true;
+cross_domain_bosh = false
+consider_bosh_secure = true
+consider_websocket_secure = true
 
 ssl = {
-    protocol = "tlsv1_2+";
-    ciphers = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384"
+    protocol = "tlsv1_2+"
 }
 
 unlimited_jids = {
@@ -37,28 +59,27 @@ unlimited_jids = {
     "jvb@auth.${MEET}"
 }
 
-smacks_max_unacked_stanzas = 5;
-smacks_hibernation_time = 60;
-smacks_max_old_sessions = 1;
-
 VirtualHost "${MEET}"
     authentication = "jitsi-anonymous"
+
     ssl = {
-        key = "/etc/prosody/certs/${MEET}.key";
-        certificate = "/etc/prosody/certs/${MEET}.crt";
+        key = "/etc/prosody/certs/${MEET}.key"
+        certificate = "/etc/prosody/certs/${MEET}.crt"
     }
+
     modules_enabled = {
         "bosh";
         "websocket";
         "smacks";
         "ping";
         "external_services";
-        "features_identity";
         "conference_duration";
         "muc_lobby_rooms";
         "muc_breakout_rooms";
     }
+
     c2s_require_encryption = false
+
     lobby_muc = "lobby.${MEET}"
     breakout_rooms_muc = "breakout.${MEET}"
     main_muc = "conference.${MEET}"
@@ -70,79 +91,37 @@ Component "conference.${MEET}" "muc"
         "muc_hide_all";
         "muc_meeting_id";
         "muc_domain_mapper";
-        "token_verification";
+        -- "token_verification";
         "muc_rate_limit";
-        "muc_password_whitelist";
     }
     admins = { "focus@auth.${MEET}" }
-    muc_password_whitelist = { "focus@auth.${MEET}" }
-    muc_room_locking = false
-    muc_room_default_public_jids = true
 
 Component "breakout.${MEET}" "muc"
-    restrict_room_creation = true
     storage = "memory"
-    modules_enabled = {
-        "muc_hide_all";
-        "muc_meeting_id";
-        "muc_domain_mapper";
-        "muc_rate_limit";
-    }
-    admins = { "focus@auth.${MEET}" }
-    muc_room_locking = false
-    muc_room_default_public_jids = true
+    restrict_room_creation = true
 
 Component "internal.auth.${MEET}" "muc"
     storage = "memory"
     modules_enabled = { "muc_hide_all"; "ping"; }
     admins = { "focus@auth.${MEET}", "jvb@auth.${MEET}" }
-    muc_room_locking = false
-    muc_room_default_public_jids = true
 
 VirtualHost "auth.${MEET}"
-    ssl = {
-        key = "/etc/prosody/certs/auth.${MEET}.key";
-        certificate = "/etc/prosody/certs/auth.${MEET}.crt";
-    }
-    modules_enabled = { "limits_exception"; "smacks"; }
     authentication = "internal_hashed"
-    smacks_hibernation_time = 15;
 
 VirtualHost "recorder.${MEET}"
-    modules_enabled = { "smacks"; }
     authentication = "internal_hashed"
-    smacks_max_old_sessions = 2000;
 
 Component "focus.${MEET}" "client_proxy"
     target_address = "focus@auth.${MEET}"
-
-Component "speakerstats.${MEET}" "speakerstats_component"
-    muc_component = "conference.${MEET}"
-
-Component "endconference.${MEET}" "end_conference"
-    muc_component = "conference.${MEET}"
-
-Component "avmoderation.${MEET}" "av_moderation_component"
-    muc_component = "conference.${MEET}"
-
-Component "lobby.${MEET}" "muc"
-    storage = "memory"
-    restrict_room_creation = true
-    muc_room_locking = false
-    muc_room_default_public_jids = true
-    modules_enabled = { "muc_hide_all"; "muc_rate_limit"; }
-
-Component "filesharing.${MEET}" "filesharing_component"
-    muc_component = "conference.${MEET}"
-
-Component "metadata.${MEET}" "room_metadata_component"
-    muc_component = "conference.${MEET}"
-    breakout_rooms_component = "breakout.${MEET}"
-
-Component "polls.${MEET}" "polls_component"
 PCFG
 
 ln -sf "${PROSODY_CFG}" "/etc/prosody/conf.d/${MEET}.cfg.lua"
+
+###############################################################################
+# Generate Prosody certificates (required)
+###############################################################################
+
+mkdir -p /etc/prosody/certs
 
 # Generate prosody self-signed certs if missing
 for vhost in "${MEET}" "auth.${MEET}"; do
@@ -155,15 +134,34 @@ for vhost in "${MEET}" "auth.${MEET}"; do
   fi
 done
 
+prosodyctl cert generate "${MEET}" 2>/dev/null || true
+prosodyctl cert generate "auth.${MEET}" 2>/dev/null || true
+
+mv /var/lib/prosody/${MEET}.* /etc/prosody/certs/ 2>/dev/null || true
+mv /var/lib/prosody/auth.${MEET}.* /etc/prosody/certs/ 2>/dev/null || true
+
+chown prosody:prosody /etc/prosody/certs/*
+chmod 640 /etc/prosody/certs/*
+
+###############################################################################
+# Restart Prosody
+###############################################################################
+
 systemctl enable prosody
 systemctl restart prosody
 sleep 3
 
+###############################################################################
 # Register XMPP users
+###############################################################################
+
 prosodyctl register focus "auth.${MEET}" "${JICOFO_PASS}" 2>/dev/null || true
 prosodyctl register jvb   "auth.${MEET}" "${JVB_PASS}"    2>/dev/null || true
 
-# ── jicofo — matches PVE config ───────────────────────────────────────────
+###############################################################################
+# Jicofo configuration
+###############################################################################
+
 cat > /etc/jitsi/jicofo/jicofo.conf <<JCEOF
 jicofo {
   xmpp: {
@@ -174,21 +172,26 @@ jicofo {
       username: "focus"
       password: "${JICOFO_PASS}"
     }
-    trusted-domains: [ "recorder.${MEET}" ]
   }
+
   bridge: {
-    brewery-jid: "JvbBrewery@internal.auth.${MEET}"
+    brewery-jid: "jvbbrewery@internal.auth.${MEET}"
   }
 }
 JCEOF
 
-# ── jicofo sysvinit config (REQUIRED — tells Java where to find jicofo.conf) ──
+###############################################################################
+# Jicofo environment config
+###############################################################################
+
 cat > /etc/jitsi/jicofo/config <<'JCSEOF'
-# Jicofo sysvinit environment — matches PVE
 JAVA_SYS_PROPS="-Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dnet.java.sip.communicator.SC_HOME_DIR_NAME=jicofo -Dnet.java.sip.communicator.SC_LOG_DIR_LOCATION=/var/log/jitsi -Djava.util.logging.config.file=/etc/jitsi/jicofo/logging.properties"
 JCSEOF
 
-# ── JVB — matches PVE config with ice4j static mappings ───────────────────
+###############################################################################
+# Jitsi Videobridge configuration (FIXED HOCON)
+###############################################################################
+
 cat > /etc/jitsi/videobridge/jvb.conf <<JVEOF
 videobridge {
     http-servers {
@@ -196,27 +199,39 @@ videobridge {
             port = 9090
         }
     }
+
     websockets {
         enabled = true
         domain = "${MEET}:443"
         tls = true
     }
-    apis.xmpp-client.configs {
-        shard {
-            HOSTNAME=localhost
-            DOMAIN="auth.${MEET}"
-            USERNAME=jvb
-            PASSWORD="${JVB_PASS}"
-            MUC_JIDS="jvbbrewery@internal.auth.${MEET}"
-            MUC_NICKNAME="$(uuidgen 2>/dev/null || openssl rand -hex 8)"
+
+    apis {
+        xmpp-client {
+            configs {
+                shard {
+                    hostname = "localhost"
+                    domain = "auth.${MEET}"
+                    username = "jvb"
+                    password = "${JVB_PASS}"
+                    muc_jids = "jvbbrewery@internal.auth.${MEET}"
+                    muc_nickname = "$(uuidgen 2>/dev/null || openssl rand -hex 8)"
+                }
+            }
         }
     }
 }
+
 ice4j {
     harvest {
         mapping {
             aws { enabled = false }
-            stun { enabled = false; addresses = [] }
+
+            stun {
+                enabled = false
+                addresses = []
+            }
+
             static-mappings = [
                 {
                     local-address = "${LXC_IP}"
@@ -229,44 +244,31 @@ ice4j {
 }
 JVEOF
 
-# ── JVB sysvinit config (REQUIRED — tells Java where to find jvb.conf) ──
+###############################################################################
+# JVB environment config
+###############################################################################
+
 cat > /etc/jitsi/videobridge/config <<JVSEOF
-# JVB sysvinit environment — matches PVE
 JAVA_SYS_PROPS="-Dconfig.file=/etc/jitsi/videobridge/jvb.conf -Dnet.java.sip.communicator.SC_HOME_DIR_LOCATION=/etc/jitsi -Dnet.java.sip.communicator.SC_HOME_DIR_NAME=videobridge -Dnet.java.sip.communicator.SC_LOG_DIR_LOCATION=/var/log/jitsi -Djava.util.logging.config.file=/etc/jitsi/videobridge/logging.properties"
 JVSEOF
 
 mkdir -p /var/log/jitsi
 chown jvb:jitsi /var/log/jitsi 2>/dev/null || true
 
-# ── Jitsi Meet config.js — matches PVE ────────────────────────────────────
-JITSI_CONFIG="/etc/jitsi/meet/${MEET}-config.js"
-[[ ! -d "/etc/jitsi/meet" ]] && mkdir -p /etc/jitsi/meet
-cat > "${JITSI_CONFIG}" <<JMEOF
-var config = {
-    hosts: {
-        domain: '${MEET}',
-        muc: 'conference.${MEET}',
-    },
-    bosh: 'https://${MEET}/http-bind',
-    websocket: 'wss://${MEET}/xmpp-websocket',
-    enableWelcomePage: false,
-    enableClosePage: false,
-    enableNoisyMicDetection: true,
-    enableNoAudioDetection: true,
-    channelLastN: -1,
-    p2p: {
-        enabled: true,
-        stunServers: [
-            { urls: 'stun:meet-jit-si-turnrelay.jitsi.net:443' },
-        ],
-    },
-    analytics: {},
-};
-JMEOF
+###############################################################################
+# Restart Jitsi stack
+###############################################################################
+
+systemctl daemon-reload
 
 systemctl enable jicofo jitsi-videobridge2
-# Note: JVB may fail here because nginx stream (step 07) isn't up yet.
-# Services will be restarted after nginx config in step 07.
-systemctl restart jicofo 2>/dev/null || echo "  jicofo start deferred (nginx not yet configured)"
-systemctl restart jitsi-videobridge2 2>/dev/null || echo "  JVB start deferred (nginx not yet configured)"
+
+systemctl restart prosody
+sleep 2
+
+systemctl restart jicofo
+sleep 2
+
+systemctl restart jitsi-videobridge2
+
 echo "  Jitsi Meet configured."
