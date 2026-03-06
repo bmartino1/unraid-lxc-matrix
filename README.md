@@ -81,7 +81,7 @@ Set your options... In Template Create the container example
 
 then open the LXC console.
 
-### Step 2 — Run the intail setup scritps and configurations!
+### Step 3 — Run the intail setup scritps and configurations!
 **See Below**
 
 ---
