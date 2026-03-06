@@ -1,21 +1,42 @@
 #!/bin/bash
 ###############################################################################
-# Configure Nginx — mirrors known-working baseline stream mux + vhosts
+# 07-nginx-config.sh
+# Own ALL nginx config.
 #
 # External:
 #   80/tcp    -> nginx
 #   443/tcp   -> nginx stream mux
-#   10000/udp -> nginx stream proxy to JVB (matches baseline)
+#   10000/udp -> nginx stream proxy to JVB
+#
+# Internal:
+#   127.0.0.1:60443 -> matrix + meet vhosts
 ###############################################################################
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 echo "  Configuring Nginx..."
+
+ENV_FILE="/root/matrix.env"
+[[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE"; exit 1; }
+
+set -a
+. "$ENV_FILE"
+set +a
+
+: "${DOMAIN:?Missing DOMAIN in matrix.env}"
+: "${MEET:?Missing MEET in matrix.env}"
+: "${TURN:?Missing TURN in matrix.env}"
+: "${LXC_IP:?Missing LXC_IP in matrix.env}"
+
+SSL_DIR="/etc/ssl/nginx"
+JITSI_ROOT="/usr/share/jitsi-meet"
+JITSI_CONFIG="/etc/jitsi/meet/${MEET}-config.js"
 
 mkdir -p /etc/nginx/sites-available
 mkdir -p /etc/nginx/sites-enabled
 mkdir -p /etc/nginx/modules-enabled
 mkdir -p /etc/nginx/conf.d
-mkdir -p /etc/ssl/nginx
+mkdir -p "$SSL_DIR"
 mkdir -p /var/log/nginx
 
 rm -f /etc/nginx/sites-enabled/*
@@ -25,7 +46,10 @@ touch /var/log/nginx/error.log
 touch /var/log/nginx/stream.log
 chown www-data:adm /var/log/nginx/access.log /var/log/nginx/error.log /var/log/nginx/stream.log 2>/dev/null || true
 
-SSL_DIR="/etc/ssl/nginx"
+###############################################################################
+# Choose certs for nginx front-end
+# Prefer LE for DOMAIN if present; otherwise self-signed local certs.
+###############################################################################
 
 for fqdn in "${DOMAIN}" "${MEET}"; do
   if [[ ! -f "${SSL_DIR}/${fqdn}.crt" || ! -f "${SSL_DIR}/${fqdn}.key" ]]; then
@@ -49,6 +73,10 @@ if [[ -f "$LE_CERT" && -f "$LE_KEY" ]]; then
   KEY="$LE_KEY"
 fi
 
+###############################################################################
+# Load stream module if needed
+###############################################################################
+
 if [[ -f /usr/share/nginx/modules-available/mod-stream.conf ]]; then
   ln -sf /usr/share/nginx/modules-available/mod-stream.conf \
     /etc/nginx/modules-enabled/50-mod-stream.conf 2>/dev/null || true
@@ -58,7 +86,11 @@ load_module /usr/lib/nginx/modules/ngx_stream_module.so;
 EOF
 fi
 
-cat > /etc/nginx/nginx.conf <<NGEOF
+###############################################################################
+# Main nginx.conf
+###############################################################################
+
+cat > /etc/nginx/nginx.conf <<'EOF'
 user www-data;
 worker_processes auto;
 pid /run/nginx.pid;
@@ -83,9 +115,15 @@ http {
 }
 
 include /etc/nginx/stream.conf;
-NGEOF
+EOF
 
-cat > /etc/nginx/stream.conf <<STEOF
+###############################################################################
+# stream.conf
+# 443/tcp mux between TURN and HTTPS
+# 10000/udp proxies to local JVB
+###############################################################################
+
+cat > /etc/nginx/stream.conf <<EOF
 stream {
 
     log_format stream_basic '\$remote_addr [\$time_local] '
@@ -113,16 +151,18 @@ stream {
         ssl_preread on;
     }
 
-    # JVB media over UDP — mirrored from known-working baseline
-#    server {
-#        listen 10000 udp;
-#        proxy_pass ${LXC_IP}:10000;
-#    }
+    server {
+        listen 10000 udp;
+        proxy_pass ${LXC_IP}:10000;
+    }
 }
-STEOF
+EOF
 
-cat > /etc/nginx/sites-available/matrix <<MEOF
-# /etc/nginx/sites-enabled/matrix
+###############################################################################
+# Matrix site
+###############################################################################
+
+cat > /etc/nginx/sites-available/matrix <<EOF
 server {
     listen 127.0.0.1:60443 ssl http2;
     server_name ${DOMAIN};
@@ -158,47 +198,56 @@ server {
     server_name ${DOMAIN};
     return 301 https://\$host\$request_uri;
 }
-MEOF
+EOF
 
-if [[ -d "/usr/share/element-web" ]]; then
-  sed -i "s|root /var/www/element|root /usr/share/element-web|" /etc/nginx/sites-available/matrix
+if [[ -d /usr/share/element-web ]]; then
+  sed -i 's|root /var/www/element|root /usr/share/element-web|' /etc/nginx/sites-available/matrix
 fi
 
-JITSI_ROOT="/usr/share/jitsi-meet"
-JITSI_CONFIG="/etc/jitsi/meet/${MEET}-config.js"
+###############################################################################
+# Meet site
+# Internal-only listener behind stream mux
+###############################################################################
 
-cat > /etc/nginx/sites-available/meet <<JTEOF
-# /etc/nginx/sites-enabled/meet
+cat > /etc/nginx/sites-available/meet <<EOF
 upstream prosody {
     zone upstreams 64K;
     server 127.0.0.1:5280;
     keepalive 2;
 }
+
 upstream jvb1 {
     zone upstreams 64K;
     server 127.0.0.1:9090;
     keepalive 2;
 }
+
 map \$arg_vnode \$prosody_node {
     default prosody;
 }
+
 map \$http_referer \$allowed_referer {
     default                     0;
     "~*${DOMAIN//./\\.}"        1;
 }
+
 server {
     listen 127.0.0.1:60443 ssl http2;
     server_name ${MEET};
+
     ssl_certificate     ${CERT};
     ssl_certificate_key ${KEY};
+
     set \$prefix "";
     set \$custom_index "";
     set \$config_js_location ${JITSI_CONFIG};
+
     root ${JITSI_ROOT};
     ssi on;
     ssi_types application/x-javascript application/javascript;
     index index.html index.htm;
     error_page 404 /static/404.html;
+
     gzip on;
     gzip_types text/plain text/css application/javascript application/json image/x-icon application/octet-stream application/wasm;
     gzip_vary on;
@@ -298,23 +347,42 @@ server {
         rewrite ^/([^/?&:'"]+)/(.*)\$ /\$2;
     }
 }
+
 server {
     listen 80;
     server_name ${MEET};
     return 301 https://\$host\$request_uri;
 }
-JTEOF
+EOF
 
 ln -sf /etc/nginx/sites-available/matrix /etc/nginx/sites-enabled/matrix
 ln -sf /etc/nginx/sites-available/meet   /etc/nginx/sites-enabled/meet
 
-nginx -t || { echo "ERROR: nginx config test failed"; nginx -t; exit 1; }
+###############################################################################
+# Validate nginx before restart
+###############################################################################
+
+nginx -t || { echo "ERROR: nginx config test failed"; exit 1; }
+
+###############################################################################
+# Start order
+# nginx first, then Prosody, then Jicofo, then JVB
+###############################################################################
 
 systemctl enable nginx
 systemctl restart nginx
 
-echo "  Restarting Jitsi services (need nginx for websockets)..."
-systemctl restart jicofo 2>/dev/null || true
-systemctl restart jitsi-videobridge2 2>/dev/null || true
+systemctl restart prosody
+sleep 3
+
+systemctl restart jicofo
+sleep 5
+
+systemctl restart jitsi-videobridge2
+sleep 5
 
 echo "  Nginx configured with stream mux."
+echo "  Quick checks:"
+echo "    nginx -t"
+echo "    ss -lunp | grep ':10000'"
+echo "    systemctl --no-pager --full status nginx prosody jicofo jitsi-videobridge2"
