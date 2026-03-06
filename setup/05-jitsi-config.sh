@@ -109,12 +109,26 @@ ln -sf "/etc/prosody/certs/auth.${MEET}.key" "/etc/prosody/certs/internal.auth.$
 # Trust auth.<MEET> cert system-wide and for Java
 ###############################################################################
 
-cp -f "/etc/prosody/certs/auth.${MEET}.crt" "/usr/local/share/ca-certificates/auth.${MEET}.crt"
+#cp -f "/etc/prosody/certs/auth.${MEET}.crt" "/usr/local/share/ca-certificates/auth.${MEET}.crt"
+#Was delted...
+
+AUTH_CRT="/etc/prosody/certs/auth.${MEET}.crt"
+CA_CRT="/usr/local/share/ca-certificates/auth.${MEET}.crt"
+
+if [[ "$(readlink -f "$AUTH_CRT")" != "$(readlink -f "$CA_CRT" 2>/dev/null || echo "__missing__")" ]]; then
+  install -m 0644 "$AUTH_CRT" "$CA_CRT"
+fi
+
 update-ca-certificates >/dev/null 2>&1 || true
+
+keytool -delete \
+  -alias "auth-${MEET//./-}" \
+  -keystore /etc/ssl/certs/java/cacerts \
+  -storepass changeit >/dev/null 2>&1 || true
 
 keytool -importcert -noprompt \
   -alias "auth-${MEET//./-}" \
-  -file "/etc/prosody/certs/auth.${MEET}.crt" \
+  -file "$AUTH_CRT" \
   -keystore /etc/ssl/certs/java/cacerts \
   -storepass changeit >/dev/null 2>&1 || true
 
