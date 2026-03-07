@@ -54,7 +54,10 @@ WHY DEBIAN 12 BOOKWORM (NOT BUSTER/BULLSEYE)
 - Buster (10): EOL August 2022 — DO NOT USE
 - Bullseye (11): Only ships Java 11 — JVB2 works but Java 17 preferred
 - Bookworm (12): Ships Java 17 natively, all repos support it, EOL 2028
+- Trixie (13): ships with java 21 nativle Jitsu won't install
+
 => Bookworm is the correct choice
+
 
 ==================================================
 TWO-PHASE SETUP MODEL
@@ -78,6 +81,8 @@ PORTS USED
 External (forward to LXC):
   80/tcp   - HTTP (ACME challenge + redirect)
   443/tcp  - HTTPS (Nginx SNI stream router)
+
+Internal (SNI Routing only):
   3478/udp - coturn TURN/STUN
   3478/tcp - coturn TURN/STUN (TCP)
   5349/tcp - coturn TURNS (TLS)
@@ -107,3 +112,4 @@ meet.<domain> is restricted by Nginx:
 
 This means video calls work within Element but Jitsi cannot be used
 as a standalone public meeting room (by design for private deployments).
+Only when Patch scirpt is ran.
