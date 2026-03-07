@@ -302,10 +302,11 @@ This prints a registration URL like `https://chat.yourdomain.com/#/register?toke
   ├─ :80/tcp    ──▶ Nginx ──▶ HTTPS redirect + ACME challenge
   │
   ├─ :443/tcp   ──▶ Nginx SNI stream router
-  │                    ├─ chat.yourdomain.com        ──▶ Element Web
-  │                    ├─ matrix.chat.yourdomain.com ──▶ Matrix Synapse :8008
-  │                    └─ meet.chat.yourdomain.com   ──▶ Jitsi (widget only — 403 direct)
-  │
+                       ├─ chat.yourdomain.com        ──▶ Element Web
+                       ├─ matrix.chat.yourdomain.com ──▶ Matrix Synapse :8008
+                       └─ meet.chat.yourdomain.com   ──▶ Jitsi (widget only — 403 direct)
+                       │
+                       │SNI Routred Over RP
   ├─ :3478/udp+tcp ──▶ coturn TURN/STUN
   ├─ :5349/tcp     ──▶ coturn TURNS (TLS)
   └─ :10000/udp    ──▶ Jitsi Video Bridge media
@@ -325,6 +326,10 @@ All TLS is terminated at Nginx. Internal services communicate over loopback (`12
 |---|---|---|
 | 80 | TCP | Nginx — HTTP redirect + ACME |
 | 443 | TCP | Nginx — HTTPS SNI router |
+
+**Internal** — SNI Routed, no forwarding needed:
+| Port | Protocol | Service |
+|---|---|---|
 | 3478 | UDP + TCP | coturn — TURN/STUN |
 | 5349 | TCP | coturn — TURNS (TLS) |
 | 10000 | UDP | Jitsi Video Bridge — media |
