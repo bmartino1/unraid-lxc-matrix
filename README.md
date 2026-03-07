@@ -138,7 +138,7 @@ A    yourdomain.com          →  <your public IP>
 A    meet.yourdomain.com     →  <your public IP>
 A    turn.yourdomain.com     →  <your public IP>
 
-SRV  _matrix._tcp.chat.yourdomain.com  10 0 443  matrix.chat.yourdomain.com
+SRV  _matrix._tcp.yourdomain.com  10 0 443  yourdomain.com
 ```
 > ⚠️ The SRV record enables Matrix federation so other homeservers can discover yours.
 
