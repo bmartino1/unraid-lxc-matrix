@@ -39,6 +39,7 @@ This project provides a prebuilt **Debian 12 Unraid LXC** containing a full self
 | **Valkey** | Redis-compatible cache for Synapse performance |
 
 The goal is a **turnkey setup**: import the template, assign a static IP, run one script, and have a working stack.
+see notes for addational documentation: https://github.com/bmartino1/unraid-lxc-matrix/blob/main/notes.txt    
 
 ---
 
