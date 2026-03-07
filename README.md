@@ -301,15 +301,15 @@ This prints a registration URL like `https://chat.yourdomain.com/#/register?toke
   │
   ├─ :80/tcp    ──▶ Nginx ──▶ HTTPS redirect + ACME challenge
   │
-  ├─ :443/tcp   ──▶ Nginx SNI stream router
+  └─ :443/tcp   ──▶ Nginx SNI stream router
                        ├─ chat.yourdomain.com        ──▶ Element Web
                        ├─ matrix.chat.yourdomain.com ──▶ Matrix Synapse :8008
                        └─ meet.chat.yourdomain.com   ──▶ Jitsi (widget only — 403 direct)
                        │
-                       │SNI Routred Over RP
-  ├─ :3478/udp+tcp ──▶ coturn TURN/STUN
-  ├─ :5349/tcp     ──▶ coturn TURNS (TLS)
-  └─ :10000/udp    ──▶ Jitsi Video Bridge media
+                       └─SNI (Nginx Stream)Routed Over RP:
+                         ├─ :3478/udp+tcp ──▶ coturn TURN/STUN
+                         ├─ :5349/tcp     ──▶ coturn TURNS (TLS)
+                         └─ :10000/udp    ──▶ Jitsi Video Bridge media
 ```
 
 All TLS is terminated at Nginx. Internal services communicate over loopback (`127.0.0.1`) only.
