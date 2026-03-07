@@ -128,33 +128,26 @@ Before running setup, forward the following ports on your router to the LXC cont
 |---|---|---|
 | 80 | TCP | Nginx — HTTP redirect + Let's Encrypt ACME challenge |
 | 443 | TCP | Nginx — HTTPS (Element Web, Matrix API, Jitsi widget) |
-| 3478 | UDP + TCP | coturn — TURN/STUN |
-| 5349 | TCP | coturn — TURNS (TLS) |
-| 10000 | UDP | Jitsi Video Bridge — media relay |
-
-*Full lets encrypt setup can work with only port 443 and port 80 setup...
 
 ### Step 3 — Create DNS records
 
 Point the following DNS A records to your **public IP** (the one your router forwards to the LXC):
 
 ```
-A    chat.yourdomain.com          →  <your public IP>
-A    matrix.chat.yourdomain.com   →  <your public IP>
-A    meet.chat.yourdomain.com     →  <your public IP>
-A    turn.chat.yourdomain.com     →  <your public IP>
+A    yourdomain.com          →  <your public IP>
+A    meet.yourdomain.com     →  <your public IP>
+A    turn.yourdomain.com     →  <your public IP>
 
 SRV  _matrix._tcp.chat.yourdomain.com  10 0 443  matrix.chat.yourdomain.com
 ```
-
-The SRV record enables Matrix federation so other homeservers can discover yours.
+> ⚠️ The SRV record enables Matrix federation so other homeservers can discover yours.
 
 ### Step 4 — Run setup
 
 Open the LXC console and run:
 
 ```bash
-/root/setup.sh --domain chat.yourdomain.com --admin-pass ChangeMe
+/root/setup.sh --domain yourdomain.com --admin-pass ChangeMe
 ```
 
 Setup runs nine phases: PostgreSQL → Valkey → Synapse → Element Web → Jitsi → coturn → Nginx → SSL → health check. All credentials are saved to `/root/.matrix-stack.env` (chmod 600).
@@ -199,6 +192,7 @@ cat /root/.matrix-stack.env
 | `--staging` | Use Let's Encrypt staging environment (for testing — not trusted by browsers). | `false` |
 | `--reconfigure` / `--reset` | Re-run full configuration with new domain or secrets. | `false` |
 
+> ⚠️ Due to edits and fixes some options may not exist or be functional...
 ---
 
 ## After Setup
@@ -297,24 +291,78 @@ This prints a registration URL like `https://chat.yourdomain.com/#/register?toke
 ## Security Architecture
 
 ```
-[Internet]
-  │
-  ├─ :80/tcp    ──▶ Nginx ──▶ HTTPS redirect + ACME challenge
-  │
-  └─ :443/tcp   ──▶ Nginx SNI stream router
-                       ├─ chat.yourdomain.com        ──▶ Element Web
-                       ├─ matrix.chat.yourdomain.com ──▶ Matrix Synapse :8008
-                       └─ meet.chat.yourdomain.com   ──▶ Jitsi (widget only — 403 direct)
-                       │
-                       └─SNI (Nginx Stream)Routed Over RP:
-                         ├─ :3478/udp+tcp ──▶ coturn TURN/STUN
-                         ├─ :5349/tcp     ──▶ coturn TURNS (TLS)
-                         └─ :10000/udp    ──▶ Jitsi Video Bridge media
+                                     DNS
+                                      │
+    ┌─────────────────────────────────┼───────────────────────────────────────┐
+    │                                 │                                       │
+    │A  domain_name.com    A  meet.domain_name.com   A  turn.domain_name.com  │
+    │                                 │                                       │
+    └─────────────────────────────────┴───────────────────────────────────────┘
+                                      │
+                               Public WAN IP
+                                      │
+                              [ Home Router / NAT ]
+                                      │
+    ┌─────────────────────────────────┼───────────────────────────────────────┐
+  	│                           Nginx :80                                     │
+    │                    HTTP redirect + ACME                                 │
+    │                                                                         │
+    │                         Nginx stream :443                               │
+    │                     ssl_preread / SNI router                            │
+    │                                 │                                       │
+    └─────────────────────────────────┴───────────────────────────────────────┘
+                                      │
+                    ┌─────────────────┼─────────────────┐
+                                      │
+								  80/tcp
+					     			  ▼
+                                  443/tcp
+                                      │
+                                      ▼
+                    LXC static IP (example 192.168.1.50)
+                                      │
+     ┌────────────────────────────────┼────────────────────────────────────┐
+     │                                │                                    │
+     │                           Nginx :80                                 │
+     │                    HTTP redirect + ACME                             │
+     │                                                                     │
+     │                         Nginx stream :443                           │
+     │                     ssl_preread / SNI router                        │
+     │                  ┌──────────────────────────┐                       │
+     │                  │ SNI = turn.<domain>      │────▶ 127.0.0.1:5349  │
+     │                  │ default = HTTPS          │────▶ 127.0.0.1:60443 │
+     │                  └──────────────────────────┘                       │
+     │                                                                     │
+     │                    Nginx HTTPS :127.0.0.1:60443                     │
+     │                   ┌───────────────────────────────┐                 │
+     │                   │ server_name <domain>          │                 │
+     │                   │   /           → Element Web   │                 │
+     │                   │   /_matrix    → Synapse :8008 │                 │
+     │                   │   /_synapse   → Synapse :8008 │                 │
+     │                   └───────────────────────────────┘                 │
+     │                   ┌───────────────────────────────┐                 │
+     │                   │ server_name meet.<domain>     │                 │
+     │                   │   web UI      → Jitsi static  │                 │
+     │                   │   /http-bind  → Prosody :5280 │                 │
+     │                   │   /xmpp-websocket             │                 │
+     │                   │               → Prosody :5280 │                 │
+     │                   │   /colibri-ws → JVB :9090     │                 │
+     │                   └───────────────────────────────┘                 │
+     │                                                                     │
+     │   Synapse        127.0.0.1:8008                                     │
+     │   coturn         127.0.0.1:3478 and 127.0.0.1:5349                  │
+     │   Prosody        127.0.0.1:5280 / 5347 / 5222                       │
+     │   JVB            :9090 internally, :10000/udp externally            │
+     │   PostgreSQL     127.0.0.1:5432                                     │
+     │   Valkey         127.0.0.1:6379                                     │
+     └─────────────────────────────────────────────────────────────────────┘
 ```
 
 All TLS is terminated at Nginx. Internal services communicate over loopback (`127.0.0.1`) only.
 
 **Jitsi is widget-only by design.** Direct browser navigation to `meet.<domain>` returns HTTP 403. Jitsi is only accessible as an embedded iframe widget inside Element Web. Nginx enforces this via `Origin`/`Referer` header checks and `Content-Security-Policy: frame-ancestors`.
+
+> ⚠️ Setup intenaly shiped with meet.domainname public... run patch script if you don't want jitsu public accessible!
 
 ---
 
