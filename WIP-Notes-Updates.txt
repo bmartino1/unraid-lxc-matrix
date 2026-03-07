@@ -1,20 +1,33 @@
 all facets have been tested. jitsu, cotrun, matrix, teext voice vidoe all functional!
 
-nginx still needs small edits to 403 secure and block meet.domain_name but allw elemnt web access to meet.domain_name... as there is a way to have it 403 to the public but full functional to the logged in users for elemnt widget
+nginx still needs small edits to 403 secure and block meet.domain_name but allw elemnt web access to meet.domain_name... as there is a way to have it 403 to the public but full functional to the logged in users for elemnt widget. fixed by running the patch script.
 
-*Current relase is Finalized. only 443 and port 80 are needed nginx is full RP tothe system!
+cd /root/
+wget https://raw.githubusercontent.com/bmartino1/unraid-lxc-matrix/refs/heads/main/patch.sh
+chmod +x patch.sh
+/root/patch.sh
+
+*Will add patch to /roo when tersting is complete for a final update
+
+*Current relase is Finalized. only 443 and port 80 are needed nginx is full RP to the system! if you don't run the patch meet.domainname is public facing.
 :)
 
-Please note, some admin scripts untested.
+Please note, some admin scripts that need further testiing... untested fixes to stream line setup at setup/build config issues.
+These are the Known Untested Admin/Assist scripts: (mosr code for them shold be ther to be functinoal)
 
-Known Untested Admin/Assist scripts:
-backup.sh --may need to revisit latter...
+backup.sh --may need to revisit latter... add a restore sh script
+
 registration-toggle.sh -- should be working edits home sever to enable or disalb site registration for security
-registration-tokens.sh -- invite sytems untested random documentation 
-renew-ssl.sh (tested on a diffent host not latteset revison should be fine...) - sytem is using self singed keys
-room-manage.sh -- partial tested more to list whats on the sever not allfacets tested
+
+registration-tokens.sh -- invite sytems untested random documentation, requires being federated
+
+renew-ssl.sh (tested on a diffent host not latteset revison should be fine...) - system is using self-singed keys as its all local host traffic now.
+
+room-manage.sh -- partial tested more to list whats on the sever not all facets tested
+
 rotate-secrets.sh -- should work but untested. should backup matrix env used to rerun setup (rerun with --reconfigure does teh same except celar teh database. need to check singin keys and other for federation tests
+
 update-stack.sh -- install unatedned upgrades and use apt-get... untested script should be fine..
 
 :/
-all other scirpt run as intended. don't forget to run teh get token whcih uses the admin script to grab the admn token for use with other scriitps!
+all other scirpt run as intended. don't forget to run the get token which uses the admin account created to script to grab the adimn token for use with other needed commands for scritps its added to the matrix.env!
